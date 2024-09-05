@@ -172,3 +172,5 @@ Ffmpeg version is OK! Let's use it.
 В `minikube` тип `LoadBalancer` работает путем перенаправления на `NodePort`, и minikube service автоматически открывает `URL` в `браузере` или предоставляет команду для его открытия.
 
 ![Alt text](./kubernetes-intro/HW1_image.jpg)
+
+Вывод браузера.
