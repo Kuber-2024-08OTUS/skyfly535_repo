@@ -9,6 +9,225 @@ skyfly535 kubernetes repository
 
 - [HW1 Знакомство с решениями для запуска локального Kubernetes кластера, создание первого pod.](#hw1-знакомство-с-решениями-для-запуска-локального-kubernetes-кластера-создание-первого-pod)
 
+- [HW2 Kubernetes controllers. ReplicaSet, Deployment, DaemonSet.](#hw2-kubernetes-controllers-replicaset-deployment-daemonset)
+
+# HW2 Kubernetes controllers. ReplicaSet, Deployment, DaemonSet.
+
+## В процессе выполнения ДЗ выполнены следующие мероприятия:
+
+1. Манифест для `namespace` с именем `homework` взят из ДЗ №1 ./kubernetes-intro/namespace.yaml.
+
+### 1. `namespace.yaml`
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: homework
+```
+
+2. Создан манифеста ./kubernetes-controllers/pod.yaml, описывающий поднимаемый `deployment` и удовлетворяющий требованиям ДЗ.
+
+### 2. `deployment.yaml`
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: homework-deployment
+  namespace: homework
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: homework-app
+  template:
+    metadata:
+      labels:
+        app: homework-app
+    spec:
+      containers:
+      - name: web-server
+        image: nginx:alpine
+        ports:
+        - containerPort: 8000
+        volumeMounts:
+        - name: homework-volume
+          mountPath: /homework
+        lifecycle:
+          preStop:
+            exec:
+              command: ["rm", "/homework/index.html"]
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            cp /homework/index.html /usr/share/nginx/html/index.html && \
+            exec nginx -g 'daemon off;' -c /etc/nginx/nginx.conf
+        readinessProbe:
+          exec:
+            command:
+            - cat
+            - /homework/index.html
+          initialDelaySeconds: 5
+          periodSeconds: 10
+      initContainers:
+      - name: init-container
+        image: busybox
+        command: ["/bin/sh", "-c"]
+        args:
+          - echo "Hello, OTUS! Homework 1!" > /init/index.html
+        volumeMounts:
+        - name: homework-volume
+          mountPath: /init
+      volumes:
+      - name: homework-volume
+        emptyDir: {}
+      nodeSelector:
+        homework: "true"
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+```
+### Пояснение:
+**Deployment**:
+   - **replicas: 3**: Создаются `3` экземпляра подов.
+   - **readinessProbe**: Проба проверяет наличие файла `/homework/index.html` в контейнере.
+   - **strategy**: Стратегия `RollingUpdate` настроена так, что во время обновления не более одного пода может быть недоступен (`maxUnavailable: 1`).
+   
+### Задание с * 
+
+- **nodeSelector**: Указывает, что поды могут запускаться только на `нодах` с меткой `homework=true`. 
+
+### Проверка
+
+Производим развертывание и видим, что поды в состоянии `Pending` 
+
+```
+$ kubectl get pods -n homework
+NAME                                   READY   STATUS    RESTARTS   AGE
+homework-deployment-64cbbd86f8-2wv6v   0/1     Pending   0          41s
+homework-deployment-64cbbd86f8-b4bfz   0/1     Pending   0          41s
+homework-deployment-64cbbd86f8-tfdsp   0/1     Pending   0          41s
+```
+Это означает, что Kubernetes не может назначить их на ноды кластера без метки `homework`.
+
+Исправляем
+
+```
+$ kubectl label node minikube homework=true
+node/minikube labeled
+```
+Проверяем
+
+```
+$ kubectl get pods -n homework
+NAME                                   READY   STATUS    RESTARTS   AGE
+homework-deployment-64cbbd86f8-2wv6v   1/1     Running   0          2m57s
+homework-deployment-64cbbd86f8-b4bfz   0/1     Running   0          2m57s
+homework-deployment-64cbbd86f8-tfdsp   0/1     Running   0          2m57s
+
+$ kubectl get pods -n homework
+NAME                                   READY   STATUS    RESTARTS   AGE
+homework-deployment-64cbbd86f8-2wv6v   1/1     Running   0          2m58s
+homework-deployment-64cbbd86f8-b4bfz   0/1     Running   0          2m58s
+homework-deployment-64cbbd86f8-tfdsp   0/1     Running   0          2m58s
+
+$ kubectl get pods -n homework
+NAME                                   READY   STATUS    RESTARTS   AGE
+homework-deployment-64cbbd86f8-2wv6v   1/1     Running   0          3m23s
+homework-deployment-64cbbd86f8-b4bfz   1/1     Running   0          3m23s
+homework-deployment-64cbbd86f8-tfdsp   1/1     Running   0          3m23s
+```
+
+Вывод тот же, что и в первом ДЗ
+
+![Alt text](./kubernetes-controllers/HW2-1.jpg)
+
+Меняем выводимый текст `Hello, OTUS! Homework 2!` в `deployment.yaml` 
+
+выполняем
+
+```
+$ kubectl apply -f ./
+deployment.apps/homework-deployment configured
+namespace/homework unchanged
+service/homework-service unchanged
+```
+и проверяем как выполняется `RollingUpdate`
+
+```
+$ kubectl get pods -n homework
+NAME                                   READY   STATUS     RESTARTS   AGE
+homework-deployment-6449cb7fc6-p5r6d   0/1     Init:0/1   0          2s
+homework-deployment-6449cb7fc6-v9b6q   0/1     Init:0/1   0          2s
+homework-deployment-7c6dd4d867-bzp8v   1/1     Running    0          3m40s
+homework-deployment-7c6dd4d867-nfw28   1/1     Running    0          3m40s
+
+$ kubectl get pods -n homework
+NAME                                   READY   STATUS     RESTARTS   AGE
+homework-deployment-6449cb7fc6-p5r6d   0/1     Running    0          8s
+homework-deployment-6449cb7fc6-v9b6q   0/1     Init:0/1   0          8s
+homework-deployment-7c6dd4d867-bzp8v   1/1     Running    0          3m46s
+homework-deployment-7c6dd4d867-nfw28   1/1     Running    0          3m46s
+
+$ kubectl get pods -n homework
+NAME                                   READY   STATUS     RESTARTS   AGE
+homework-deployment-6449cb7fc6-kf762   0/1     Init:0/1   0          4s
+homework-deployment-6449cb7fc6-p5r6d   1/1     Running    0          14s
+homework-deployment-6449cb7fc6-v9b6q   0/1     Running    0          14s
+homework-deployment-7c6dd4d867-bzp8v   1/1     Running    0          3m52s
+
+$ kubectl get pods -n homework
+NAME                                   READY   STATUS    RESTARTS   AGE
+homework-deployment-6449cb7fc6-kf762   0/1     Running   0          7s
+homework-deployment-6449cb7fc6-p5r6d   1/1     Running   0          17s
+homework-deployment-6449cb7fc6-v9b6q   0/1     Running   0          17s
+homework-deployment-7c6dd4d867-bzp8v   1/1     Running   0          3m55s
+
+$ kubectl get pods -n homework
+NAME                                   READY   STATUS        RESTARTS   AGE
+homework-deployment-6449cb7fc6-kf762   0/1     Running       0          11s
+homework-deployment-6449cb7fc6-p5r6d   1/1     Running       0          21s
+homework-deployment-6449cb7fc6-v9b6q   1/1     Running       0          21s
+homework-deployment-7c6dd4d867-bzp8v   1/1     Terminating   0          3m59s
+
+$ kubectl get pods -n homework
+NAME                                   READY   STATUS    RESTARTS   AGE
+homework-deployment-6449cb7fc6-kf762   1/1     Running   0          24s
+homework-deployment-6449cb7fc6-p5r6d   1/1     Running   0          34s
+homework-deployment-6449cb7fc6-v9b6q   1/1     Running   0          34s
+```
+![Alt text](./kubernetes-controllers/HW2-2.jpg)
+
+Проверяем работу `readinessProbe` удалением у одного из подов файла `/homework/index.html`
+
+```
+kubectl exec -it homework-deployment-7c6dd4d867-242mx -n homework -- rm /homework/index.html
+```
+видим 
+
+```
+$ kubectl get pods -n homework
+NAME                                   READY   STATUS    RESTARTS   AGE
+homework-deployment-7c6dd4d867-242mx   0/1     Running   0          19h
+homework-deployment-7c6dd4d867-pcfw6   1/1     Running   0          19h
+homework-deployment-7c6dd4d867-zw8l4   1/1     Running   0          19h
+```
+
+### 1. **Readiness Probe не будет выполнена**
+У каждого пода настроена `readinessProbe`, которая проверяет наличие файла `/homework/index.html`. Если этот файл исчезнет, команда `cat /homework/index.html`, указанная в `readinessProbe`, не сможет найти файл и вернет ошибку.
+
+Это приведет к тому, что `readinessProbe` будет считаться неуспешной для этого пода.
+
+### 2. **Потеря статуса "Ready"**
+Когда `readinessProbe` не выполняется, Kubernetes автоматически снимает статус `Ready` с пода, и под перестает считаться готовым к приему трафика. В выводе команды `kubectl get pods` статус пода будет отображаться как `0/1 Ready`.
+
+### 3. **Трафик перестанет направляться на под**
+Kubernetes использует `readinessProbe` для управления тем, какие поды могут принимать трафик. Как только под теряет статус "Ready", сервисы и балансировщики нагрузки Kubernetes (например, `Service` или `Ingress`) перестают направлять трафик на этот под. Это важно для обеспечения высокой доступности, чтобы пользователи не направлялись на под, который не может корректно обрабатывать запросы.
+
+### 4. **Восстановление статуса "Ready"**
+Если файл `/homework/index.html` будет восстановлен, `readinessProbe` снова пройдет успешно, и под вновь станет "Ready", после чего на него возобновится направление трафика.
+
+Этот процесс показывает, что пропажа файла является сигналом для Kubernetes, что под не может работать в полном объеме, и он исключается из ротации трафика до устранения проблемы.
 
 # HW1 Знакомство с решениями для запуска локального Kubernetes кластера, создание первого pod.
 

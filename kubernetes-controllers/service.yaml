@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: homework-service
+  namespace: homework
+spec:
+  selector:
+    app: homework-app  # Селектор метки pod-ов, созданных деплойментом
+  ports:
+    - protocol: TCP
+      port: 8000       # Порт, на котором доступен сервис 
+      targetPort: 80   # Порт, на который  перенаправляеться трафик внутри контейнеров
+  type: NodePort       # Используется NodePort для доступа снаружи Minikube (LoadBalancer для облака)
