@@ -48,7 +48,7 @@ spec:
       - name: web-server
         image: nginx:alpine
         ports:
-        - containerPort: 8000
+        - containerPort: 80
         volumeMounts:
         - name: homework-volume
           mountPath: /homework
