@@ -19,7 +19,7 @@ skyfly535 kubernetes repository
 
 ## В процессе выполнения ДЗ выполнены следующие мероприятия:
 
-1. Создать манифест `pvc.yaml`, описывающий `PersistentVolumeClaim`, запрашивающий хранилище с `storageClass` по-умолчанию.
+1. Создан манифест `pvc.yaml`, описывающий `PersistentVolumeClaim`, запрашивающий хранилище с `storageClass` по-умолчанию.
 
 ```yaml
 apiVersion: v1
@@ -53,7 +53,7 @@ spec:
 - PVC будет ждать, пока `PersistentVolume` (PV), соответствующий этим запросам, не будет доступен. Если используется динамическое выделение, `StorageClass` сработает и создаст PV автоматически.
 - После создания и связывания PV с этим PVC, он будет доступен для подов в пространстве имен `homework` для использования в качестве постоянного хранилища.
 
-2. Создать манифест `cm.yaml` для объекта типа `configMap`, описывающий произвольный набор пар ключ-значение.
+2. Создан манифест `cm.yaml` для объекта типа `configMap`, описывающий произвольный набор пар ключ-значение.
 
 ```yaml
 apiVersion: v1
@@ -72,8 +72,7 @@ data:
 В нашем случае `ConfigMap` используется как `файл` и монтируется в под как `volume`,а значение будет доступно как файл.
 
 3. В манифесте `deployment.yaml` изменена спецификация `volume` с типа `emptyDir`, который монтируется в init и основной контейнер, на `pvc`, созданный в предыдущем
-пункте. Добавлено монтирование ранее созданного `configMap` как `volume` к основному
-контейнеру пода в директорию `/homework/conf`.
+пункте. Добавлено монтирование ранее созданного `configMap` как `volume` к основному контейнеру пода в директорию `/homework/conf`.
 
 ```yaml
 apiVersion: apps/v1
@@ -152,7 +151,7 @@ spec:
 В данном случае содержимое `ConfigMap` проброшенно в каталог `/usr/share/nginx/html/index.html` и отобразится в браузере, при обращении по адресу `http://homework.otus/homepage`.
 Файл хранящийся в `persistentVolumeClaim` и подмонтированный в каталог пода `/homework/pvc` будет доступен и после пересоздания Deployment, и после выкатки новой версии.
 
-5. Создан манифест `storageClass.yaml` описывающий объект типа `storageClass` с provisioner https://k8s.io/minikube-hostpath и `reclaimPolicy Retain`.
+4. Создан манифест `storageClass.yaml` описывающий объект типа `storageClass` с provisioner https://k8s.io/minikube-hostpath и `reclaimPolicy Retain`.
 
 ```yaml
 apiVersion: storage.k8s.io/v1
