@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: my-config
+  namespace: homework
+data:
+  text: Hello, OTUS! Homework 4! ConfigMap Text.
