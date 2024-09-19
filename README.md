@@ -13,6 +13,207 @@ skyfly535 kubernetes repository
 
 - [HW3 Сетевое взаимодействие Pod, сервисы.](#hw3-сетевое-взаимодействие-pod-сервисы)
 
+- [HW4 Volumes, StorageClass, PV, PVC.](#hw4-volumes-storageclass-pv-pvc)
+
+# HW4 Volumes, StorageClass, PV, PVC.
+
+## В процессе выполнения ДЗ выполнены следующие мероприятия:
+
+1. Создан манифест `pvc.yaml`, описывающий `PersistentVolumeClaim`, запрашивающий хранилище с `storageClass` по-умолчанию.
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: my-pvc
+  namespace: homework
+spec:
+  storageClassName: my-storage-class
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+```
+
+Этот `PersistentVolumeClaim` (PVC) предназначен для запроса динамического или статического хранилища в кластере Kubernetes. Вот его описание:
+
+### Пояснение:
+
+- **spec:**
+  - **storageClassName:** `my-storage-class` — Указывает на `StorageClass`, который будет использоваться для предоставления запрашиваемого хранилища. В этом случае PVC пытается использовать хранилище, созданное с помощью `StorageClass` с именем `my-storage-class`.
+  - **accessModes:**
+    - `ReadWriteOnce` — Указывает, что PVC будет доступен для чтения и записи только одним узлом одновременно.
+  - **resources:**
+    - **requests:** 
+      - **storage:** `1Gi` — Запрос на объем хранилища, который требуется. В данном случае запрашивается 1 гигабайт постоянного хранилища.
+
+### Дальнейшие действия:
+
+- PVC будет ждать, пока `PersistentVolume` (PV), соответствующий этим запросам, не будет доступен. Если используется динамическое выделение, `StorageClass` сработает и создаст PV автоматически.
+- После создания и связывания PV с этим PVC, он будет доступен для подов в пространстве имен `homework` для использования в качестве постоянного хранилища.
+
+2. Создан манифест `cm.yaml` для объекта типа `configMap`, описывающий произвольный набор пар ключ-значение.
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: my-config
+  namespace: homework
+data:
+  text: Hello, OTUS! Homework 4! ConfigMap Text.
+```
+
+### Пояснение:
+
+Этот `ConfigMap` предназначен для хранения конфигурационных данных в виде пар ключ-значение, которые могут быть использованы подами в кластере Kubernetes.
+
+В нашем случае `ConfigMap` используется как `файл` и монтируется в под как `volume`,а значение будет доступно как файл.
+
+3. В манифесте `deployment.yaml` изменена спецификация `volume` с типа `emptyDir`, который монтируется в init и основной контейнер, на `pvc`, созданный в предыдущем
+пункте. Добавлено монтирование ранее созданного `configMap` как `volume` к основному контейнеру пода в директорию `/homework/conf`.
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: homework-deployment
+  namespace: homework
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: homework-app
+  template:
+    metadata:
+      labels:
+        app: homework-app
+    spec:
+      containers:
+      - name: web-server
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: homework-volume
+          mountPath: /homework/pvc    # Монтируем PVC
+        - name: config-volume
+          mountPath: /homework/conf   # Монтируем ConfigMap как volume
+        lifecycle:
+          preStop:
+            exec:
+              command: ["rm", "/homework/index.html"]
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            cp /homework/conf/text /homework/index.html && \
+            cp /homework/index.html /usr/share/nginx/html/index.html && \
+            exec nginx -g 'daemon off;' -c /etc/nginx/nginx.conf
+        readinessProbe:
+          exec:
+            command:
+            - cat
+            - /homework/index.html
+          initialDelaySeconds: 5
+          periodSeconds: 10
+      initContainers:
+      - name: init-container
+        image: busybox
+        command: ["/bin/sh", "-c"]
+        args:
+          - echo "Hello, OTUS! Homework 4! PVC Text." > /init/index.html
+        volumeMounts:
+        - name: homework-volume
+          mountPath: /init
+      volumes:
+      - name: homework-volume
+        persistentVolumeClaim:
+          claimName: my-pvc     # Здесь объявляется PVC 
+      - name: config-volume 
+        configMap:
+          name: my-config       # Здесь монтируется ConfigMap
+      nodeSelector:
+        homework: "true"
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+```
+
+### Пояснение:
+
+1. **Замена `emptyDir` на `PersistentVolumeClaim`:** Теперь volume `homework-volume` использует PVC с именем `my-pvc`.
+2. **Добавлен ConfigMap:** Создан новый volume `config-volume`, который монтируется в папку `/homework/conf`.
+
+Это позволит поду использовать постоянное хранилище и иметь доступ к данным из ConfigMap.
+
+В данном случае содержимое `ConfigMap` проброшенно в каталог `/usr/share/nginx/html/index.html` и отобразится в браузере, при обращении по адресу `http://homework.otus/homepage`.
+Файл хранящийся в `persistentVolumeClaim` и подмонтированный в каталог пода `/homework/pvc` будет доступен и после пересоздания Deployment, и после выкатки новой версии.
+
+4. Создан манифест `storageClass.yaml` описывающий объект типа `storageClass` с provisioner https://k8s.io/minikube-hostpath и `reclaimPolicy Retain`.
+
+```yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: my-storage-class
+provisioner: k8s.io/minikube-hostpath
+reclaimPolicy: Retain
+volumeBindingMode: Immediate
+```
+Этот `StorageClass` определяет параметры для создания динамических томов хранения в кластере Kubernetes. Он предоставляет способ настройки и управления типами хранилища, которые могут быть динамически выделены для подов. Вот подробное описание этого `StorageClass`:
+
+### Пояснение:
+
+- **provisioner:** `k8s.io/minikube-hostpath` — Имя провиженера, который отвечает за создание томов хранения. В данном случае используется провиженер `minikube-hostpath`, который поддерживается Minikube для создания томов с использованием хранилища на узлах Minikube.
+- **reclaimPolicy:** `Retain` — Политика возврата, определяющая, что происходит с томом после удаления `PersistentVolumeClaim` (PVC):
+  - `Retain` — После удаления PVC том не удаляется автоматически, а сохраняется, чтобы данные могли быть восстановлены или использованы снова.
+  - Другие варианты — `Delete` (том удаляется) и `Recycle` (том очищается и возвращается в пул доступных томов).
+- **volumeBindingMode:** `Immediate` — Указывает, когда `PersistentVolume` (PV) должен быть привязан к `PersistentVolumeClaim` (PVC):
+  - `Immediate` — Привязка PV к PVC происходит сразу после создания PVC.
+  - Альтернативный вариант — `WaitForFirstConsumer`, где привязка PV откладывается до тех пор, пока под, использующий PVC, не будет запланирован на узел.
+
+### Проверка
+
+Применяем новые манифесты и обновляем Deployment
+
+```bash
+/kubernetes-volumes$ kubectl apply -f ./
+```
+смотрим
+
+```bash
+$ curl http://homework.otus/homepage
+Hello, OTUS! Homework 4! ConfigMap Text.
+
+$ kubectl exec -it homework-deployment-79bddf547f-blpg6 /bin/sh -n homework
+kubectl exec [POD] [COMMAND] is DEPRECATED and will be removed in a future version. Use kubectl exec [POD] -- [COMMAND] instead.
+Defaulted container "web-server" out of: web-server, init-container (init)
+/ # cat /homework/pvc/index.html
+Hello, OTUS! Homework 4! PVC Text.
+```
+Удаляем развертывание
+
+```bash
+$ kubectl delete -f deployment.yaml 
+deployment.apps "homework-deployment" deleted
+```
+Коментим секцию с `initContainers` в манифесте `deployment` и создаем заново
+
+```bash
+$ kubectl apply -f deployment.yaml 
+deployment.apps/homework-deployment created
+```
+Проверяем наличие файла в примонтированном `volume homework-volume`
+
+```bash
+$ kubectl exec -it homework-deployment-86dccd98f7-cjf9r /bin/sh -n homework
+kubectl exec [POD] [COMMAND] is DEPRECATED and will be removed in a future version. Use kubectl exec [POD] -- [COMMAND] instead.
+/ # cat /homework/pvc/index.html
+Hello, OTUS! Homework 4! PVC Text.
+```
+
 # HW3 Сетевое взаимодействие Pod, сервисы.
 
 ## В процессе выполнения ДЗ выполнены следующие мероприятия:
