@@ -1,0 +1,69 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: homework-deployment
+  namespace: homework
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: homework-app
+  template:
+    metadata:
+      labels:
+        app: homework-app
+    spec:
+      serviceAccountName: monitoring  # Убедитесь, что эта строка присутствует
+      containers:
+      - name: web-server
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: homework-volume
+          mountPath: /homework/pvc
+        - name: config-volume
+          mountPath: /homework/conf
+        lifecycle:
+          preStop:
+            exec:
+              command: ["rm", "/homework/index.html"]
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            apk add --no-cache curl && \
+            cp /homework/conf/text /homework/index.html && \
+            cp /homework/index.html /usr/share/nginx/html/index.html && \
+            curl --cacert /var/run/secrets/kubernetes.io/serviceaccount/ca.crt \
+                 -H "Authorization: Bearer $(cat /var/run/secrets/kubernetes.io/serviceaccount/token)" \
+                 https://kubernetes.default.svc/metrics -o /usr/share/nginx/html/metrics.html && \
+            exec nginx -g 'daemon off;' -c /etc/nginx/nginx.conf
+        readinessProbe:
+          exec:
+            command:
+            - cat
+            - /homework/index.html
+          initialDelaySeconds: 5
+          periodSeconds: 10
+      initContainers:
+      - name: init-container
+        image: busybox
+        command: ["/bin/sh", "-c"]
+        args:
+          - echo "Hello, OTUS! Homework 4! PVC Text." > /init/index.html
+        volumeMounts:
+        - name: homework-volume
+          mountPath: /init
+      volumes:
+      - name: homework-volume
+        persistentVolumeClaim:
+          claimName: my-pvc
+      - name: config-volume
+        configMap:
+          name: my-config
+      nodeSelector:
+        homework: "true"
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1

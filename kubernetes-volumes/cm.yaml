@@ -4,4 +4,4 @@ metadata:
   name: my-config
   namespace: homework
 data:
-  text: Hello, OTUS! Homework 4! ConfigMap Text.
+  text: Hello, OTUS! Homework 5! ConfigMap Text.
