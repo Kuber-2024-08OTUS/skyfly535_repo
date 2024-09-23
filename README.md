@@ -15,6 +15,344 @@ skyfly535 kubernetes repository
 
 - [HW4 Volumes, StorageClass, PV, PVC.](#hw4-volumes-storageclass-pv-pvc)
 
+- [HW5 Настройка сервисных аккаунтов и ограничение прав для них.](#hw5-настройка-сервисных-аккаунтов-и-ограничение-прав-для-них)
+
+# HW5 Настройка сервисных аккаунтов и ограничение прав для них.
+
+## В процессе выполнения ДЗ выполнены следующие мероприятия:
+
+### 1. Создан `ServiceAccount` с именем `monitoring` в пространстве имен `homework` и предоставлен доступ к эндпоинту `/metrics` кластера.
+
+**a. Создан ServiceAccount:**
+
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: monitoring
+  namespace: homework
+```
+
+**b. Создан ClusterRole для доступа к `/metrics`:**
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: metrics-reader
+rules:
+  - nonResourceURLs: ["/metrics"]
+    verbs: ["get"]
+```
+
+**c. Привязан ClusterRole к ServiceAccount `monitoring`:**
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: monitoring-metrics-reader
+subjects:
+  - kind: ServiceAccount
+    name: monitoring
+    namespace: homework
+roleRef:
+  kind: ClusterRole
+  name: metrics-reader
+  apiGroup: rbac.authorization.k8s.io
+```
+---
+Применяем конфигурации:
+
+```bash
+kubectl apply -f sa_monitoring.yaml
+kubectl apply -f cr_monitoring.yaml
+kubectl apply -f crb_monitoring.yaml
+```
+---
+
+### 2. Измен манифест Deployment, чтобы поды запускались под `ServiceAccount` `monitoring`.
+
+```yaml
+spec:
+  template:
+    spec:
+      serviceAccountName: monitoring  # Добавлена эта строка
+      containers:
+      - name: web-server
+        # ... остальная часть спецификации контейнера
+```
+Применяем конфигурацию:
+
+```bash
+kubectl apply -f deployment.yaml
+```
+Проверяем метаданные ресурса `deployment homework-deployment`
+
+```bash
+$ kubectl get deployment homework-deployment -o yaml -n homework | grep monitoring
+      {"apiVersion":"apps/v1","kind":"Deployment","metadata":{"annotations":{},"name":"homework-deployment","namespace":"homework"},"spec":{"replicas":3,"selector":{"matchLabels":{"app":"homework-app"}},"strategy":{"rollingUpdate":{"maxUnavailable":1},"type":"RollingUpdate"},"template":{"metadata":{"labels":{"app":"homework-app"}},"spec":{"containers":[{"args":["cp /homework/conf/text /homework/index.html \u0026\u0026 \\\ncp /homework/index.html /usr/share/nginx/html/index.html \u0026\u0026 \\\nexec nginx -g 'daemon off;' -c /etc/nginx/nginx.conf\n"],"command":["/bin/sh","-c"],"image":"nginx:alpine","lifecycle":{"preStop":{"exec":{"command":["rm","/homework/index.html"]}}},"name":"web-server","ports":[{"containerPort":80}],"readinessProbe":{"exec":{"command":["cat","/homework/index.html"]},"initialDelaySeconds":5,"periodSeconds":10},"volumeMounts":[{"mountPath":"/homework/pvc","name":"homework-volume"},{"mountPath":"/homework/conf","name":"config-volume"}]}],"initContainers":[{"args":["echo \"Hello, OTUS! Homework 4! PVC Text.\" \u003e /init/index.html"],"command":["/bin/sh","-c"],"image":"busybox","name":"init-container","volumeMounts":[{"mountPath":"/init","name":"homework-volume"}]}],"nodeSelector":{"homework":"true"},"serviceAccountName":"monitoring","volumes":[{"name":"homework-volume","persistentVolumeClaim":{"claimName":"my-pvc"}},{"configMap":{"name":"my-config"},"name":"config-volume"}]}}}}
+      serviceAccount: monitoring
+      serviceAccountName: monitoring
+```
+---
+
+### 3. Создан `ServiceAccount` с именем `cd` в пространстве имен `homework` и предоставим ему роль `admin` в рамках этого пространства имен.
+
+**a. Создан ServiceAccount:**
+
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cd
+  namespace: homework
+```
+
+**b. Привязан ClusterRole `admin` к ServiceAccount `cd` в пространстве имен `homework`:**
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: cd-admin-binding
+  namespace: homework
+subjects:
+  - kind: ServiceAccount
+    name: cd
+    namespace: homework
+roleRef:
+  kind: ClusterRole
+  name: admin
+  apiGroup: rbac.authorization.k8s.io
+```
+---
+Применяем конфигурации:
+
+```bash
+kubectl apply -f sa_cd.yaml
+kubectl apply -f rb_cd.yaml
+```
+Для проверки используем команду `kubectl describe`, чтобы получить подробную информацию о конкретной привязке ролей для `RoleBinding`:
+
+```bash
+$ kubectl describe rolebinding cd-admin-binding -n homework
+Name:         cd-admin-binding
+Labels:       <none>
+Annotations:  <none>
+Role:
+  Kind:  ClusterRole
+  Name:  admin
+Subjects:
+  Kind            Name  Namespace
+  ----            ----  ---------
+  ServiceAccount  cd    homework
+```
+---
+
+### 4. Сгенерирован kubeconfig для ServiceAccount cd. Сгенерирован токен со сроком действия 1 день и сохраним его в файл `token`.
+
+**a. Получена информацию о кластере:**
+
+```bash
+CLUSTER_NAME=$(kubectl config view --raw --flatten --minify -o jsonpath='{.clusters[0].name}')
+SERVER=$(kubectl config view --raw --flatten --minify -o jsonpath='{.clusters[0].cluster.server}')
+CA_CERT=$(kubectl config view --raw --flatten --minify -o jsonpath='{.clusters[0].cluster.certificate-authority-data}')
+```
+
+**b. Сгенерирован токен для ServiceAccount `cd` со сроком действия 1 день и сохранён его в файл `token`:**
+
+```bash
+kubectl -n homework create token cd --duration=24h > token
+```
+
+**c. Создан файл kubeconfig:**
+
+```bash
+TOKEN=$(cat token)
+cat <<EOF > kubeconfig
+apiVersion: v1
+kind: Config
+clusters:
+- cluster:
+    certificate-authority-data: $CA_CERT
+    server: $SERVER
+  name: $CLUSTER_NAME
+contexts:
+- context:
+    cluster: $CLUSTER_NAME
+    user: cd
+    namespace: homework
+  name: cd-context
+current-context: cd-context
+users:
+- name: cd
+  user:
+    token: $TOKEN
+EOF
+```
+Устанавливаем переменную окружения `KUBECONFIG`, чтобы команды kubectl автоматически использовали `kubeconfig файл`
+
+```bash
+$ export KUBECONFIG=~/skyfly535_repo/kubernetes-security/kubeconfig
+```
+---
+Проверяем:
+
+```bash
+kubectl get all
+NAME                                       READY   STATUS    RESTARTS   AGE
+pod/homework-deployment-5f96bddf87-bdjq2   1/1     Running   0          90m
+pod/homework-deployment-5f96bddf87-gr4vc   1/1     Running   0          90m
+pod/homework-deployment-5f96bddf87-rbd2n   1/1     Running   0          90m
+
+$ kubectl config current-context
+cd-context
+
+$ kubectl config get-contexts
+CURRENT   NAME         CLUSTER    AUTHINFO   NAMESPACE
+*         cd-context   minikube   cd         homework
+```
+---
+### 5. Модифицирован Deployment так, чтобы при запуске пода происходило обращение к эндпоинту `/metrics` кластера, результат сохранялся в файл `metrics.html`, и этот файл можно было получить по адресу `/metrics.html`.
+
+ Модификация Deployment для обращения к `/metrics` и предоставления `metrics.html`
+
+Обновляем раздел `args` в вашем Deployment:
+
+- Устанавливаем `curl` в контейнере (при необходимости).
+- Обращаемся к эндпоинту `/metrics`, используя токен и сертификат ServiceAccount.
+- Сохраняем ответ в `metrics.html` и скопируем его в HTML-директорию `NGINX`.
+
+**Обновленный манифест Deployment:**
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: homework-deployment
+  namespace: homework
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: homework-app
+  template:
+    metadata:
+      labels:
+        app: homework-app
+    spec:
+      serviceAccountName: monitoring  # Убедитесь, что эта строка присутствует
+      containers:
+      - name: web-server
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: homework-volume
+          mountPath: /homework/pvc
+        - name: config-volume
+          mountPath: /homework/conf
+        lifecycle:
+          preStop:
+            exec:
+              command: ["rm", "/homework/index.html"]
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            apk add --no-cache curl && \
+            cp /homework/conf/text /homework/index.html && \
+            cp /homework/index.html /usr/share/nginx/html/index.html && \
+            curl --cacert /var/run/secrets/kubernetes.io/serviceaccount/ca.crt \
+                 -H "Authorization: Bearer $(cat /var/run/secrets/kubernetes.io/serviceaccount/token)" \
+                 https://kubernetes.default.svc/metrics -o /usr/share/nginx/html/metrics.html && \
+            exec nginx -g 'daemon off;' -c /etc/nginx/nginx.conf
+        readinessProbe:
+          exec:
+            command:
+            - cat
+            - /homework/index.html
+          initialDelaySeconds: 5
+          periodSeconds: 10
+      initContainers:
+      - name: init-container
+        image: busybox
+        command: ["/bin/sh", "-c"]
+        args:
+          - echo "Hello, OTUS! Homework 4! PVC Text." > /init/index.html
+        volumeMounts:
+        - name: homework-volume
+          mountPath: /init
+      volumes:
+      - name: homework-volume
+        persistentVolumeClaim:
+          claimName: my-pvc
+      - name: config-volume
+        configMap:
+          name: my-config
+      nodeSelector:
+        homework: "true"
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+```
+---
+
+### Пояснение
+
+- **Использование ServiceAccount:**
+  - Поле `serviceAccountName: monitoring` гарантирует, что поды запускаются под `ServiceAccount` `monitoring`.
+- **Доступ к эндпоинту `/metrics`:**
+  - Установка `curl` с помощью `apk add --no-cache curl`.
+  - Использование `curl` с токеном и сертификатом ServiceAccount для безопасного доступа к эндпоинту `/metrics`:
+    ```bash
+    curl --cacert /var/run/secrets/kubernetes.io/serviceaccount/ca.crt \
+         -H "Authorization: Bearer $(cat /var/run/secrets/kubernetes.io/serviceaccount/token)" \
+         https://kubernetes.default.svc/metrics -o /usr/share/nginx/html/metrics.html
+    ```
+  - Сохранение ответа в `/usr/share/nginx/html/metrics.html`, чтобы он был доступен по адресу `http://homework.otus/metrics`.
+
+### Добавляем `Ingress` чтобы обслужить путь `/metrics`, переписывая его на /metrics.html
+
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: metrics-ingress
+  namespace: homework
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /metrics.html
+spec:
+  rules:
+  - host: homework.otus
+    http:
+      paths:
+      - path: /metrics
+        pathType: Exact
+        backend:
+          service:
+            name: my-service
+            port:
+              number: 80
+```
+---
+
+Проверяем:
+
+```bash
+$ curl http://homework.otus/metrics
+{
+  "kind": "Status",
+  "apiVersion": "v1",
+  "metadata": {},
+  "status": "Failure",
+  "message": "forbidden: User \"system:serviceaccount:homework:monitoring\" cannot get path \"/metrics\"",
+  "reason": "Forbidden",
+  "details": {},
+  "code": 403
+```
 # HW4 Volumes, StorageClass, PV, PVC.
 
 ## В процессе выполнения ДЗ выполнены следующие мероприятия:
