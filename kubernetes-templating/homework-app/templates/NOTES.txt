@@ -1,0 +1,11 @@
+1. Приложение успешно развернуто!
+
+Вы можете получить к нему доступ по следующему URL:
+
+{{- if and .Values.ingress.enabled .Values.ingress.hosts }}
+{{ range .Values.ingress.hosts }}
+  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}{{ (index .paths 0).path }}
+{{- end }}
+{{- else }}
+  ПРИМЕЧАНИЕ: Ingress отключен или не настроены хосты.
+{{- end }}

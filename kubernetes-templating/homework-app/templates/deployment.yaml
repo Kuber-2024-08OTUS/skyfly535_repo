@@ -1,0 +1,76 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "homework-app.fullname" . }}
+  labels:
+    app.kubernetes.io/name: {{ include "homework-app.name" . }}
+    helm.sh/chart: {{ include "homework-app.chart" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/version: "{{ .Chart.AppVersion }}"
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "homework-app.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "homework-app.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      nodeSelector:
+{{ toYaml .Values.nodeSelector | indent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: 80
+          volumeMounts:
+            - name: homework-volume
+              mountPath: /homework/pvc
+            - name: config-volume
+              mountPath: /homework/conf
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              apk add --no-cache curl && \
+              cp /homework/conf/text /homework/index.html && \
+              cp /homework/index.html /usr/share/nginx/html/index.html && \
+              exec nginx -g 'daemon off;' -c /etc/nginx/nginx.conf
+{{- if .Values.readinessProbe.enabled }}
+          readinessProbe:
+            exec:
+              command: {{ toYaml .Values.readinessProbe.exec.command | nindent 14 }}
+            initialDelaySeconds: {{ .Values.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.readinessProbe.periodSeconds }}
+{{- end }}
+{{- if .Values.livenessProbe.enabled }}
+          livenessProbe:
+            exec:
+              command: {{ toYaml .Values.livenessProbe.exec.command | nindent 14 }}
+            initialDelaySeconds: {{ .Values.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.livenessProbe.periodSeconds }}
+{{- end }}
+          lifecycle:
+            preStop:
+              exec:
+                command: ["rm", "/homework/index.html"]
+      initContainers:
+        - name: init-container
+          image: busybox
+          command: ["/bin/sh", "-c"]
+          args:
+            - echo "{{ .Values.message }}" > /init/index.html
+          volumeMounts:
+            - name: homework-volume
+              mountPath: /init
+      volumes:
+        - name: homework-volume
+          persistentVolumeClaim:
+            claimName: {{ include "homework-app.fullname" . }}-pvc
+        - name: config-volume
+          configMap:
+            name: {{ include "homework-app.fullname" . }}-configmap
