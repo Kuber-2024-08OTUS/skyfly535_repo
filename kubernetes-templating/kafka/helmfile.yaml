@@ -1,0 +1,15 @@
+releases:
+  - name: kafka-prod
+    namespace: prod
+    createNamespace: true
+    chart: bitnami/kafka
+    version: 25.3.5
+    values:
+      - values-prod.yaml
+
+  - name: kafka-dev
+    namespace: dev
+    createNamespace: true
+    chart: bitnami/kafka
+    values:
+      - values-dev.yaml

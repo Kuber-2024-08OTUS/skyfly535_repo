@@ -17,6 +17,547 @@ skyfly535 kubernetes repository
 
 - [HW5 Настройка сервисных аккаунтов и ограничение прав для них.](#hw5-настройка-сервисных-аккаунтов-и-ограничение-прав-для-них)
 
+- [HW6 Шаблонизация манифестов приложения, использование Helm. Установка community Helm charts.](#hw6-шаблонизация-манифестов-приложения-использование-helm-установка-community-helm-charts)
+
+# HW6 Шаблонизация манифестов приложения, использование Helm. Установка community Helm charts.
+
+## В процессе выполнения ДЗ выполнены следующие мероприятия:
+
+### 1. Создана структура-заготовка для нового `Helm chart`, используется команда `helm create`. 
+
+```bash
+helm create homework-app-chart
+Creating homework-app-chart
+```
+
+Эта команда автоматически создаёт базовую структуру файлов и папок, необходимых для Helm chart.
+
+Helm создаст папку с именем `homework-app-chart` (или другим именем, указанным вами) и заполнит её следующей структурой:
+
+```
+homework-app-chart/
+  Chart.yaml          # Основной файл с метаданными чарта (название, версия и т.д.)
+  values.yaml         # Файл с дефолтными значениями параметров для шаблонов
+  charts/             # Папка для зависимостей чарта (других Helm charts)
+  templates/          # Папка для всех Kubernetes манифестов в виде шаблонов (deployment.yaml, service.yaml и т.д.)
+  .helmignore         # Файл, указывающий, какие файлы игнорировать при создании архива чарта
+```
+
+### Описание файлов:
+- **Chart.yaml**: Содержит метаданные чарта, такие как имя, версия, описание и т.д.
+- **values.yaml**: Содержит значения по умолчанию, которые можно переопределить при установке чарта.
+- **templates/**: Содержит файлы шаблонов Kubernetes-ресурсов (например, Deployment, Service, ConfigMap и другие).
+- **charts/**: Эта директория используется для указания зависимостей, то есть других чартов, от которых зависит текущий чарт.
+- **.helmignore**: Содержит список файлов и директорий, которые должны быть исключены из пакета чарта при его сборке.
+
+Добавлены недостающие файлы
+
+```bash
+./kubernetes-templating/homework-app-chart/templates$ touch configmap.yaml pvc.yaml storageclass.yaml
+
+./kubernetes-templating/homework-app-chart$ tree
+.
+├── charts
+├── Chart.yaml
+├── templates
+│   ├── configmap.yaml
+│   ├── deployment.yaml
+│   ├── _helpers.tpl
+│   ├── hpa.yaml
+│   ├── ingress.yaml
+│   ├── NOTES.txt
+│   ├── pvc.yaml
+│   ├── service.yaml
+│   ├── storageclass.yaml
+│   └── tests
+│       └── test-connection.yaml
+└── values.yaml
+```
+---
+### 2. Параметризованны манифесты из предыдущих ДЗ. Создан файл `values.yaml`cодержащий значения по умолчанию, которые можно переопределить при установке чарта.
+
+Чарт включает параметризацию ключевых значений, возможность включения/отключения проб, включает сообщение после установки, а также зависимость от `Redis` из community-чартов.
+---
+
+### **Chart.yaml**
+
+```yaml
+apiVersion: v2
+name: homework-app
+description: Helm-чарт для приложения Homework
+type: application
+version: 0.1.0
+appVersion: "1.0"
+dependencies:    #зависимость от Redis
+  - name: redis
+    version: ">=14.8.12"
+    repository: "https://charts.bitnami.com/bitnami"
+```
+
+---
+
+### **values.yaml**
+
+```yaml
+replicaCount: 3
+
+image:
+  repository: nginx
+  tag: alpine
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+podAnnotations: {}
+podSecurityContext: {}
+securityContext: {}
+
+service:
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: true
+  className: ""
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /index.html
+  hosts:
+    - host: homework.otus
+      paths:
+        - path: /index.html
+          pathType: Prefix
+        - path: /homepage
+          pathType: Prefix
+  tls: []
+
+metricsIngress:
+  enabled: true
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /metrics.html
+  hosts:
+    - host: homework.otus
+      paths:
+        - path: /metrics
+          pathType: Exact
+  tls: []
+
+resources: {}
+
+autoscaling:
+  enabled: false
+
+nodeSelector: 
+  homework: "true"
+
+tolerations: []
+
+affinity: {}
+
+message: "Hello, OTUS! Homework 6! PVC Text."
+
+readinessProbe:
+  enabled: true
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  exec:
+    command:
+      - cat
+      - /homework/index.html
+
+livenessProbe:
+  enabled: false
+
+persistence:
+  enabled: true
+  storageClass: my-storage-class
+  accessModes:
+    - ReadWriteOnce
+  size: 1Gi
+
+configMap:
+  name: my-config
+  data:
+    text: "Hello, OTUS! Homework 6! ConfigMap Text."
+
+redis:
+  enabled: true
+
+storageClass:
+  enabled: true
+  name: my-storage-class
+  provisioner: k8s.io/minikube-hostpath
+  reclaimPolicy: Retain
+  volumeBindingMode: Immediate
+```
+
+---
+### 3. Произведено дальнейшее описание чарта удовлетворяющее требованиям ДЗ.
+
+### **templates/_helpers.tpl**
+
+Это шаблонный файл Helm, который используется для `генерации имён` объектов Kubernetes (таких как Deployment, Service и т.д.) и других важных идентификаторов при установке чарта. Он позволяет гибко настраивать названия приложений и их версий, чтобы избежать конфликтов с уже существующими ресурсами, обеспечивая уникальность, предсказуемость и консистентность.
+
+```yaml
+{{/*
+Задает стандартные метки для приложения.
+*/}}
+{{- define "homework-app.labels" -}}
+app.kubernetes.io/name: {{ include "homework-app.name" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/version: {{ .Chart.AppVersion }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- end -}}
+
+{{/*
+Задает имя для ServiceAccount
+*/}}
+{{- define "homework-app.serviceAccountName" -}}
+{{- if .Values.serviceAccount.name }}
+  {{- .Values.serviceAccount.name }}
+{{- else }}
+  {{ include "homework-app.fullname" . }}-sa
+{{- end -}}
+{{- end -}}
+
+{{/*
+Определение имени чарта (homework-app.name)
+*/}}
+{{- define "homework-app.name" -}}
+{{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{/*
+Создание полного имени приложения (homework-app.fullname)
+*/}}
+{{- define "homework-app.fullname" -}}
+{{- $name := default .Chart.Name .Values.nameOverride -}}
+{{- if .Values.fullnameOverride -}}
+{{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" -}}
+{{- else -}}
+{{- printf "%s-%s" .Release.Name $name | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Включение версии чарта (homework-app.chart)
+*/}}
+{{- define "homework-app.chart" -}}
+{{- printf "%s-%s" .Chart.Name .Chart.Version -}}
+{{- end -}}
+```
+---
+
+### **templates/NOTES.txt**
+
+### Назначение файла `templates/NOTES.txt` в Helm
+
+Этот файл Helm-чарта используется для предоставления важной информации пользователю после успешного развертывания приложения. Этот файл позволяет выводить текстовые сообщения с полезными инструкциями или ссылками, что делает процесс развертывания более информативным и удобным для пользователя.
+
+### Описание файл `NOTES.txt`:
+
+1. **Вывод полезной информации после деплоя**: После успешного развертывания приложения в Kubernetes, Helm выводит содержимое файла `NOTES.txt` в консоль. Это может быть инструкция о том, как получить доступ к приложению, проверка его состояния или дальнейшие шаги для его настройки.
+  
+2. **Гибкость для вывода динамической информации**: Так как Helm поддерживает шаблоны, можно выводить динамическую информацию, зависящую от значений в `values.yaml`. Например, URL для доступа к приложению через Ingress, который зависит от включённого или отключённого Ingress и настроенных хостов.
+
+3. **Улучшение пользовательского опыта**: Этот файл позволяет улучшить взаимодействие с пользователем, предоставив информацию, которую пользователь обычно ищет после развертывания (например, URL для доступа, порты, статус и т.д.).
+
+---
+
+#### Основные функции:
+- Вывод полезных сообщений после установки чарта.
+- Поддержка динамического вывода на основе параметров из `values.yaml`.
+- Улучшение удобства и прозрачности процесса деплоя для пользователя.
+
+Если у вас есть дополнительные вопросы или необходимо более детальное объяснение какого-либо аспекта, дайте знать!
+
+```
+1. Приложение успешно развернуто!
+
+Вы можете получить к нему доступ по следующему URL:
+
+{{- if and .Values.ingress.enabled .Values.ingress.hosts }}
+{{ range .Values.ingress.hosts }}
+  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}{{ (index .paths 0).path }}
+{{- end }}
+{{- else }}
+  ПРИМЕЧАНИЕ: Ingress отключен или не настроены хосты.
+{{- end }}
+```
+
+---
+
+### **Пояснение**
+
+- **Параметризация**: Все основные параметры, такие как имена объектов, имена контейнеров, образы, хосты, порты, количество реплик, сообщение для index.html и nodeSelector заданы как переменные в шаблонах. Вы можете настроить их через `values.yaml` или переопределить их, используя параметры `--set` при установке релиза.
+
+- **Репозиторий и тег образа**: Репозиторий и тег образа заданы отдельными параметрами (`image.repository` и `image.tag` в `values.yaml`).
+
+- **Включение/Отключение проб**: Можно включить или отключить readiness и liveness пробы, используя флаги `readinessProbe.enabled` и `livenessProbe.enabled` в `values.yaml`.
+
+- **Сообщение после установки**: После установки релиза выводится сообщение, отображающее адрес, по которому можно обратиться к сервису. Это обрабатывается шаблоном `NOTES.txt`.
+
+- **Зависимость**: Чарт включает зависимость от Redis, которая указана в `Chart.yaml` и может быть включена или отключена через `values.yaml`.
+
+---
+
+### **Обновление зависимостей**
+
+Перед установкой чарта убедитесь, что вы обновили зависимости:
+
+```bash
+helm dependency update ./homework-app
+```
+
+### **Проверка**
+
+Устанавливаем чарт с именем релиза `otusi-dev-release`:
+
+```bash
+/kubernetes-templating$ helm install otusi-dev-release ./homework-app
+W0925 20:50:52.183012  163911 warnings.go:70] path /index.html cannot be used with pathType Prefix
+NAME: otusi-dev-release
+LAST DEPLOYED: Wed Sep 25 20:50:50 2024
+NAMESPACE: default
+STATUS: deployed
+REVISION: 1
+NOTES:
+1. Приложение успешно развернуто!
+
+Вы можете получить к нему доступ по следующему URL:
+
+  http://homework.otus/index.html
+
+$ kubectl get pod
+NAME                                             READY   STATUS    RESTARTS   AGE
+otusi-dev-release-homework-app-f49fdf946-fpdvd   1/1     Running   0          17m
+otusi-dev-release-homework-app-f49fdf946-j2b56   1/1     Running   0          17m
+otusi-dev-release-homework-app-f49fdf946-xmv55   1/1     Running   0          17m
+otusi-dev-release-redis-master-0                 1/1     Running   0          17m
+otusi-dev-release-redis-replicas-0               1/1     Running   0          17m
+otusi-dev-release-redis-replicas-1               1/1     Running   0          16m
+otusi-dev-release-redis-replicas-2               1/1     Running   0          15m
+
+$ curl http://homework.otus/index.html
+Hello, OTUS! Homework 6! ConfigMap Text.
+```
+
+Переопределяем параметры, используя `--set`, переопределим колличество реплик:
+
+```bash
+$ helm upgrade otusi-dev-release ./homework-app \
+>   --set replicaCount=2
+Release "otusi-dev-release" has been upgraded. Happy Helming!
+NAME: otusi-dev-release
+LAST DEPLOYED: Wed Sep 25 21:16:47 2024
+NAMESPACE: default
+STATUS: deployed
+REVISION: 2
+NOTES:
+1. Приложение успешно развернуто!
+
+Вы можете получить к нему доступ по следующему URL:
+
+  http://homework.otus/index.html
+
+
+$ kubectl get pod
+NAME                                             READY   STATUS    RESTARTS   AGE
+otusi-dev-release-homework-app-f49fdf946-fpdvd   1/1     Running   0          26m
+otusi-dev-release-homework-app-f49fdf946-xmv55   1/1     Running   0          26m
+otusi-dev-release-redis-master-0                 0/1     Running   0          10s
+otusi-dev-release-redis-replicas-0               1/1     Running   0          26m
+otusi-dev-release-redis-replicas-1               1/1     Running   0          24m
+otusi-dev-release-redis-replicas-2               0/1     Running   0          11s
+```
+
+---
+
+Переопределим выводимый в браузер текст:
+
+```bash
+$ helm upgrade otusi-dev-release ./homework-app \
+>   --set configMap.data.text="Updated OTUS ConfigMap text"
+Release "otusi-dev-release" has been upgraded. Happy Helming!
+NAME: otusi-dev-release
+LAST DEPLOYED: Wed Sep 25 21:23:21 2024
+NAMESPACE: default
+STATUS: deployed
+REVISION: 4
+NOTES:
+1. Приложение успешно развернуто!
+
+Вы можете получить к нему доступ по следующему URL:
+
+  http://homework.otus/index.html
+
+$ curl http://homework.otus/index.html
+Updated OTUS ConfigMap text
+```
+---
+
+```bash
+$ kubectl describe pod kafka-prod-controller-0 -n prod | grep "Image:"
+    Image:         docker.io/bitnami/kafka:3.5.2-debian-11-r0
+    Image:         docker.io/bitnami/kafka:3.5.2-debian-11-r0
+```
+### 4. Установлены 2 релиза `kafka` из `bitnami helm-чарта`c следующими параметрами при помощи `helmfile`:
+
+1.1 Установлен в namespace `prod`
+ 
+1.2 Должно быть развернуто `5` брокеров
+
+1.3 Должна быть установлена kafka версии `3.5.2`
+ 
+1.4 Для клиентских и межброкерных взаимодействий
+должен использоваться протокол `SASL_PLAINTEXT`
+
+---
+
+2.1 Установлен в namespace `dev`
+
+2.2 Должно быть развернут `1` брокер
+
+2.3 Должна быть установлена `последняя` доступная
+версия kafka
+
+2.4 Для клиентских и межброкерных взаимодействий
+должен использоваться протокол `PLAINTEXT`,
+`авторизация` для подключений к кластеру `отключена`
+
+Для развертывания и возможности дальнейшее кастомизирование или включение конфигураций для конкретной среды, создан `Helmfile` с сыkками на отдельные файлы переменных  `values-prod.yaml` и `values-dev.yaml`.
+
+```yaml
+releases:
+  - name: kafka-prod
+    namespace: prod
+    createNamespace: true
+    chart: bitnami/kafka
+    version: 25.3.5
+    values:
+      - values-prod.yaml
+
+  - name: kafka-dev
+    namespace: dev
+    createNamespace: true
+    chart: bitnami/kafka
+    values:
+      - values-dev.yaml
+```
+
+За основу файлов `values-prod.yaml` и `values-dev.yaml` взяты кастомные values файлы соответствующих версий Helm чартов и кастомизированны.
+
+**Для окружения prod:**
+ 
+1.1 Должно быть развернуто `5` брокеров
+
+```yaml
+broker:
+  replicaCount: 5
+```
+1.2 Должна быть установлена kafka версии `3.5.2`
+ 
+```yaml
+image:
+  registry: docker.io
+  repository: bitnami/kafka
+  tag: 3.5.2-debian-11-r0
+  digest: ""
+```
+1.3 Для клиентских и межброкерных взаимодействий
+должен использоваться протокол `SASL_PLAINTEXT`
+
+```yaml
+client:
+    containerPort: 9092
+    protocol: SASL_PLAINTEXT
+    name: CLIENT
+    sslClientAuth: ""
+
+...
+
+  interbroker:
+    containerPort: 9094
+    protocol: SASL_PLAINTEXT
+    name: INTERNAL
+    sslClientAuth: ""
+```
+**Для окружения dev:**
+
+2.1 Должно быть развернут `1` брокер
+
+```yaml
+broker:
+  replicaCount: 1
+```
+
+2.3 Должна быть установлена `последняя` доступная
+версия kafka
+
+```yaml
+image:
+  registry: docker.io
+  repository: bitnami/kafka
+  tag: latest
+  digest: ""
+```
+
+2.4 Для клиентских и межброкерных взаимодействий
+должен использоваться протокол `PLAINTEXT`,
+`авторизация` для подключений к кластеру `отключена`
+
+```yaml
+  client:
+    containerPort: 9092
+    protocol: PLAINTEXT
+    name: CLIENT
+    sslClientAuth: ""
+  
+...
+
+  interbroker:
+    containerPort: 9094
+    protocol: PLAINTEXT
+    name: INTERNAL
+    sslClientAuth: ""
+
+...
+
+auth:
+  client:
+    enabled: false
+```
+---
+Запускаем:
+
+```bash
+./kubernetes-templating/kafka$ helmfile sync
+```
+---
+
+Проверяем
+
+```bash
+$ kubectl describe pod kafka-prod-broker-0 -n prod | grep "Image:"
+    Image:         docker.io/bitnami/kafka:3.5.2-debian-11-r0
+    Image:         docker.io/bitnami/kafka:3.5.2-debian-11-r0
+
+$ kubectl get pod -n prod
+NAME                      READY   STATUS    RESTARTS  AGE
+kafka-prod-broker-0       1/1     Running   0         35m
+kafka-prod-broker-1       1/1     Running   0         35m
+kafka-prod-broker-2       1/1     Running   0         35m
+kafka-prod-broker-3       1/1     Running   0         35m
+kafka-prod-broker-4       1/1     Running   0         35m
+kafka-prod-controller-0   1/1     Running   0         35m
+
+$ kubectl get pod -n dev
+NAME                     READY   STATUS    RESTARTS   AGE
+kafka-dev-broker-0       1/1     Running   0          35m
+kafka-dev-controller-0   1/1     Running   0          35m
+```
 # HW5 Настройка сервисных аккаунтов и ограничение прав для них.
 
 ## В процессе выполнения ДЗ выполнены следующие мероприятия:
@@ -97,7 +638,7 @@ $ kubectl get deployment homework-deployment -o yaml -n homework | grep monitori
 ```
 ---
 
-### 3. Создан `ServiceAccount` с именем `cd` в пространстве имен `homework` и предоставим ему роль `admin` в рамках этого пространства имен.
+### 3. Создан `ServiceAccount` с именем `cd` в пространстве имен `homework` и предоставлена роль `admin` в рамках этого пространства имен.
 
 **a. Создан ServiceAccount:**
 
@@ -150,7 +691,7 @@ Subjects:
 ```
 ---
 
-### 4. Сгенерирован kubeconfig для ServiceAccount cd. Сгенерирован токен со сроком действия 1 день и сохраним его в файл `token`.
+### 4. Сгенерирован kubeconfig для ServiceAccount cd. Сгенерирован токен со сроком действия 1 день и сохранен в файл token.
 
 **a. Получена информацию о кластере:**
 

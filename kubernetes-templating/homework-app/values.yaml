@@ -1,0 +1,92 @@
+replicaCount: 2
+
+image:
+  repository: nginx
+  tag: alpine
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+podAnnotations: {}
+podSecurityContext: {}
+securityContext: {}
+
+service:
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: true
+  className: ""
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /index.html
+  hosts:
+    - host: homework.otus
+      paths:
+        - path: /index.html
+          pathType: Prefix
+        - path: /homepage
+          pathType: Prefix
+  tls: []
+
+metricsIngress:
+  enabled: true
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /metrics.html
+  hosts:
+    - host: homework.otus
+      paths:
+        - path: /metrics
+          pathType: Exact
+  tls: []
+
+resources: {}
+
+autoscaling:
+  enabled: false
+
+nodeSelector: 
+  homework: "true"
+
+tolerations: []
+
+affinity: {}
+
+message: "Hello, OTUS! Homework 6! PVC Text."
+
+readinessProbe:
+  enabled: true
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  exec:
+    command:
+      - cat
+      - /homework/index.html
+
+livenessProbe:
+  enabled: false
+
+persistence:
+  enabled: true
+  storageClass: my-storage-class
+  accessModes:
+    - ReadWriteOnce
+  size: 1Gi
+
+configMap:
+  name: my-config
+  data:
+    text: "Hello, OTUS! Homework 6! ConfigMap Text."
+
+redis:
+  enabled: true
+
+storageClass:
+  enabled: true
+  name: my-storage-class
+  provisioner: k8s.io/minikube-hostpath
+  reclaimPolicy: Retain
+  volumeBindingMode: Immediate
