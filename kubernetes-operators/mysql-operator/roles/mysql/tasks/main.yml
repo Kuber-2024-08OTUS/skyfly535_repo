@@ -1,0 +1,89 @@
+---
+
+- name: Print available variables
+  debug:
+    var: vars
+
+- name: Check if resource is being deleted
+  when: meta.deletionTimestamp is defined
+  include_tasks: "../handlers/main.yml"
+
+- name: Exit if resource is being deleted and skip further tasks
+  when: meta.deletionTimestamp is defined
+  debug:
+    msg: "Resource is being deleted"
+  vars:
+    ansible_skip_tasks: true
+
+# +kubebuilder:permissions:verbs=create;update;delete;get;list;watch,resources=persistentvolumeclaims
+- name: Create PVC
+  k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: "{{ meta.name }}-pvc"
+        namespace: "{{ meta.namespace }}"
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: "{{ spec.storage_size }}"
+        storageClassName: "{{ spec.storageClassName }}"
+
+- name: Create Deployment
+  k8s:
+    state: present
+    definition:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: "{{ meta.name }}"
+        namespace: "{{ meta.namespace }}"
+      spec:
+        replicas: 1
+        selector:
+          matchLabels:
+            app: "{{ meta.name }}"
+        template:
+          metadata:
+            labels:
+              app: "{{ meta.name }}"
+          spec:
+            containers:
+              - name: mysql
+                image: "{{ spec.image }}"
+                env:
+                  - name: MYSQL_DATABASE
+                    value: "{{ spec.database }}"
+                  - name: MYSQL_ROOT_PASSWORD
+                    value: "{{ spec.password }}"
+                ports:
+                  - containerPort: 3306
+                volumeMounts:
+                  - name: mysql-storage
+                    mountPath: /var/lib/mysql
+            volumes:
+              - name: mysql-storage
+                persistentVolumeClaim:
+                  claimName: "{{ meta.name }}-pvc"
+
+- name: Create Service
+  k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: "{{ meta.name }}"
+        namespace: "{{ meta.namespace }}"
+      spec:
+        type: ClusterIP
+        selector:
+          app: "{{ meta.name }}"
+        ports:
+          - protocol: TCP
+            port: 3306
+            targetPort: 3306

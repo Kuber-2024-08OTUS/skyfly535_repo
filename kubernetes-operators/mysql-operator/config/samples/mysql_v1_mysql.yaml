@@ -1,0 +1,11 @@
+apiVersion: mysql.otus.homework/v1
+kind: MySQL
+metadata:
+  name: mysql-instance
+  namespace: default
+spec:
+  image: "mysql:5.7"
+  database: "mydb"
+  password: "mypassword"
+  storage_size: "2Gi"
+  storageClassName: "yc-network-hdd"
