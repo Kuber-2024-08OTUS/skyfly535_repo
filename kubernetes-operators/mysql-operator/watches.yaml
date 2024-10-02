@@ -1,0 +1,10 @@
+---
+# Use the 'create api' subcommand to add watches to this file.
+- version: v1
+  group: mysql.otus.homework
+  kind: MySQL
+  role: mysql
+  vars:
+    meta: "{{ _mysql_otus_homework_mysql.metadata }}"
+    spec: "{{ _mysql_otus_homework_mysql.spec }}"
+#+kubebuilder:scaffold:watch

@@ -1,0 +1,11 @@
+apiVersion: otus.homework/v1
+kind: MySQL
+metadata:
+  name: mysql-instance
+  namespace: default
+spec:
+  image: mysql:5.7
+  database: mydb
+  password: mypassword
+  storage_size: 1Gi
+  # storageClassName: yc-network-hdd # указываем необходимый storageClass для YC

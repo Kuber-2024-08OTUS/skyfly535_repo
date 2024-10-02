@@ -1,0 +1,22 @@
+---
+
+- name: Delete Deployment
+  k8s:
+    state: absent
+    kind: Deployment
+    name: "{{ meta.name }}"
+    namespace: "{{ meta.namespace }}"
+
+- name: Delete Service
+  k8s:
+    state: absent
+    kind: Service
+    name: "{{ meta.name }}"
+    namespace: "{{ meta.namespace }}"
+
+- name: Delete PVC
+  k8s:
+    state: absent
+    kind: PersistentVolumeClaim
+    name: "{{ meta.name }}-pvc"
+    namespace: "{{ meta.namespace }}"

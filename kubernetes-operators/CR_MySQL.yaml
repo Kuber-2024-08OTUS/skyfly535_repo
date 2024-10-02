@@ -1,0 +1,48 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: mysql-operator
+rules:
+  - apiGroups:
+      - "otus.homework"
+    resources:
+      - mysqls
+      - mysqls/status
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+  - apiGroups:
+      - ""
+    resources:
+      - pods              # данный компонет добавлен для для наблюдения за изменениями ресурсов (создание, удаление, обновление). Иначе оператор будет обновлять ресурсы только при перезапуске.
+      - events
+      - pods/status        
+      - services          # данный компонет добавлен для для наблюдения за изменениями ресурсов (создание, удаление, обновление). Иначе оператор будет обновлять ресурсы только при перезапуске.
+      - persistentvolumeclaims
+      - persistentvolumes # если PV не используется можно удалить
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+  - apiGroups:
+      - "apps"
+    resources:
+      - deployments      # данный компонет добавлен для для наблюдения за изменениями ресурсов (создание, удаление, обновление). Иначе оператор будет обновлять ресурсы только при перезапуске.
+      - deployments/status
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete

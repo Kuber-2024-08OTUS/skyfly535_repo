@@ -19,6 +19,774 @@ skyfly535 kubernetes repository
 
 - [HW6 Шаблонизация манифестов приложения, использование Helm. Установка community Helm charts.](#hw6-шаблонизация-манифестов-приложения-использование-helm-установка-community-helm-charts)
 
+- [HW7 Создание собственного CRD.](#hw7-создание-собственного-crd)
+
+# HW7 Создание собственного CRD.
+
+## В процессе выполнения ДЗ выполнены следующие мероприятия:
+
+### 1. Создан манифест объекта `CustomResourceDefinition` удовлетворяющий требованиям ДЗ.
+
+**1.1 CustomResourceDefinition (CRD) для MySQL**
+
+```yaml
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: mysqls.otus.homework
+spec:
+  group: otus.homework
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          required:
+            - spec
+          properties:
+            spec:
+              type: object
+              required:
+                - image
+                - database
+                - password
+                - storage_size
+              properties:
+                image:
+                  type: string
+                database:
+                  type: string
+                password:
+                  type: string
+                storage_size:
+                  type: string
+  scope: Namespaced
+  names:
+    plural: mysqls
+    singular: mysql
+    kind: MySQL
+    shortNames:
+      - my
+```
+
+---
+
+**1.2 ServiceAccount, ClusterRole и ClusterRoleBinding**
+
+- **ServiceAccount**
+
+  ```yaml
+  apiVersion: v1
+  kind: ServiceAccount
+  metadata:
+    name: mysql-operator
+    namespace: default
+  ```
+
+- **ClusterRole с полным доступом**
+
+  ```yaml
+  apiVersion: rbac.authorization.k8s.io/v1
+  kind: ClusterRole
+  metadata:
+    name: mysql-operator
+  rules:
+    - apiGroups: ["*"]
+      resources: ["*"]
+      verbs: ["*"]
+  ```
+
+- **ClusterRoleBinding**
+
+  ```yaml
+  apiVersion: rbac.authorization.k8s.io/v1
+  kind: ClusterRoleBinding
+  metadata:
+    name: mysql-operator
+  subjects:
+    - kind: ServiceAccount
+      name: mysql-operator
+      namespace: default
+  roleRef:
+    kind: ClusterRole
+    name: mysql-operator
+    apiGroup: rbac.authorization.k8s.io
+  ```
+
+---
+
+**1.3 Deployment для оператора**
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mysql-operator
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      name: mysql-operator
+  template:
+    metadata:
+      labels:
+        name: mysql-operator
+    spec:
+      serviceAccountName: mysql-operator
+      containers:
+        - name: mysql-operator
+          image: roflmaoinmysoul/mysql-operator:1.0.0
+```
+
+---
+
+**1.4 Кастомный ресурс типа MySQL**
+
+```yaml
+apiVersion: otus.homework/v1
+kind: MySQL
+metadata:
+  name: mysql-instance
+  namespace: default
+spec:
+  image: mysql:5.7
+  database: mydb
+  password: mypassword
+  storage_size: 1Gi
+```
+
+---
+
+**Пояснение:**
+
+- **CRD:** Определяет новый кастомный ресурс `MySQL` с обязательными строковыми атрибутами: `image`, `database`, `password` и `storage_size`.
+- **ServiceAccount, ClusterRole, ClusterRoleBinding:** Настраивает сервисный аккаунт `mysql-operator` с полным доступом к API.
+- **Deployment:** Развертывает оператор, используя указанный образ и сервисный аккаунт.
+- **Кастомный ресурс:** Экземпляр `MySQL`, которым будет управлять оператор.
+
+
+**Применяем манифесты и проверяем работу оператора**
+
+Проверку проводим в `Minikube`
+
+- **Применение манифестов**
+
+```bash
+./kubernetes-operators$ kubectl apply -f CRD_MySQL.yaml 
+customresourcedefinition.apiextensions.k8s.io/mysqls.otus.homework created
+
+./kubernetes-operators$ kubectl apply -f SA_MySQL.yaml 
+serviceaccount/mysql-operator created
+
+./kubernetes-operators$ kubectl apply -f CR_MySQL_old.yaml 
+clusterrole.rbac.authorization.k8s.io/mysql-operator created
+
+./kubernetes-operators$ kubectl apply -f CRB_MySQL.yaml 
+clusterrolebinding.rbac.authorization.k8s.io/mysql-operator created
+
+./kubernetes-operators$ kubectl apply -f Deployment_MySQL.yaml 
+deployment.apps/mysql-operator created
+
+./kubernetes-operators$ kubectl apply -f MySQL.yaml 
+mysql.otus.homework/mysql-instance created
+```
+
+- **Проверка создания CRD**
+
+```bash
+$ kubectl get crd mysqls.otus.homework
+NAME                   CREATED AT
+mysqls.otus.homework   2024-10-01T12:43:58Z
+```
+
+- **Проверяем, что Deployment оператора работает**
+
+```bash
+$ kubectl get deployments
+NAME             READY   UP-TO-DATE   AVAILABLE   AGE
+mysql-instance   1/1     1            1           2m24s
+mysql-operator   1/1     1            1           4m43s
+```
+
+- **Проверка кастомного ресурса**
+
+```bash
+$ kubectl get mysqls
+NAME             AGE
+mysql-instance   3m55s
+```
+
+- **Проверка созданных оператором Deployment, Service, PV и PVC**
+
+```bash
+$ kubectl get deployments
+NAME             READY   UP-TO-DATE   AVAILABLE   AGE
+mysql-instance   1/1     1            1           4m57s
+mysql-operator   1/1     1            1           7m16s
+
+$ kubectl get service
+NAME             TYPE        CLUSTER-IP   EXTERNAL-IP   PORT(S)    AGE
+kubernetes       ClusterIP   10.96.0.1    <none>        443/TCP    10m
+mysql-instance   ClusterIP   None         <none>        3306/TCP   5m5s
+
+$ kubectl get pv
+NAME                CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS   CLAIM                        STORAGECLASS   REASON   AGE
+mysql-instance-pv   1Gi        RWO            Retain           Bound    default/mysql-instance-pvc   standard                5m13s
+
+$ kubectl get pvc
+NAME                 STATUS   VOLUME              CAPACITY   ACCESS MODES   STORAGECLASS   AGE
+mysql-instance-pvc   Bound    mysql-instance-pv   1Gi        RWO            standard       5m19s
+
+$ kubectl get pod
+NAME                              READY   STATUS    RESTARTS   AGE
+mysql-instance-6d64c5596f-lfz4r   1/1     Running   0          5m26s
+mysql-operator-68b4cf86d-hnrvc    1/1     Running   0          7m45s\
+```
+
+- **Удаление кастомного ресурса и проверка очистки**
+
+```bash
+$ kubectl delete -f MySQL.yaml 
+mysql.otus.homework "mysql-instance" deleted
+
+$ kubectl get deployments
+NAME             READY   UP-TO-DATE   AVAILABLE   AGE
+mysql-operator   1/1     1            1           10m
+
+$ kubectl get service
+NAME         TYPE        CLUSTER-IP   EXTERNAL-IP   PORT(S)   AGE
+kubernetes   ClusterIP   10.96.0.1    <none>        443/TCP   13m
+
+$ kubectl get pv
+No resources found
+
+$ kubectl get pvc
+No resources found in default namespace.
+```
+### 2. Изменен манифест `ClusterRole`, для описания в нем минимального набора прав доступа необходимых для нашего CRD.
+
+**Обновленный манифест ClusterRole с минимальным набором прав доступа:**
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: mysql-operator
+rules:
+  - apiGroups:
+      - "otus.homework"
+    resources:
+      - mysqls
+      - mysqls/status
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+  - apiGroups:
+      - ""
+    resources:
+      - pods              # данный компонент добавлен для для наблюдения за изменениями ресурсов (создание, удаление, обновление). Иначе оператор будет обновлять ресурсы только при перезапуске.
+      - events
+      - pods/status        
+      - services          # данный компонент добавлен для для наблюдения за изменениями ресурсов (создание, удаление, обновление). Иначе оператор будет обновлять ресурсы только при перезапуске.
+      - persistentvolumeclaims
+      - persistentvolumes # если PV не используется можно удалить
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+  - apiGroups:
+      - "apps"
+    resources:
+      - deployments      # данный компонент добавлен для для наблюдения за изменениями ресурсов (создание, удаление, обновление). Иначе оператор будет обновлять ресурсы только при перезапуске.
+      - deployments/status
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+```
+
+**Пояснение:**
+
+**2.1 Управление ресурсом CRD (`MySQL`):**
+
+   - **apiGroups:** `otus.homework`
+   - **resources:** `mysqls` , `mysqls/status`
+   - **verbs:** `get`, `list`, `watch`, `create`, `update`, `patch`, `delete`
+
+   Это позволяет оператору управлять своими кастомными ресурсами `MySQL`, включая их создание, обновление и удаление.
+
+**2.2 Создание и управление Deployment:**
+
+   - **apiGroups:** `apps`
+   - **resources:** `deployments` , `deployments/status`
+   - **verbs:** `get`, `list`, `watch`, `create`, `update`, `patch`, `delete`
+
+   Оператор создает Deployment для запуска экземпляра MySQL, поэтому ему необходимы эти права.
+
+**2.3 Создание и управление Service и PersistentVolumeClaim (PVC):**
+
+   - **apiGroups:** `""` (core API group)
+   - **resources:** `services`, `persistentvolumeclaims` , `pods` , `events` , `pods/status` , `persistentvolumes`
+   - **verbs:** `get`, `list`, `watch`, `create`, `update`, `patch`, `delete`
+
+
+
+**Проверяем**
+
+```bash
+kubectl apply -f CR_MySQL.yaml
+
+kubectl apply -f CRB_MySQL.yaml
+   ```
+
+**Смотрим лог пода кастомного ресурса**
+
+```bash
+$ kubectl logs mysql-instance-6d64c5596f-fs6dm
+2024-10-01 13:00:24+00:00 [Note] [Entrypoint]: Entrypoint script for MySQL Server 5.7.44-1.el7 started.
+2024-10-01 13:00:24+00:00 [Note] [Entrypoint]: Switching to dedicated user 'mysql'
+2024-10-01 13:00:24+00:00 [Note] [Entrypoint]: Entrypoint script for MySQL Server 5.7.44-1.el7 started.
+'/var/lib/mysql/mysql.sock' -> '/var/run/mysqld/mysqld.sock'
+2024-10-01T13:00:24.846002Z 0 [Warning] TIMESTAMP with implicit DEFAULT value is deprecated. Please use --explicit_defaults_for_timestamp server option (see documentation for more details).
+2024-10-01T13:00:24.846830Z 0 [Note] mysqld (mysqld 5.7.44) starting as process 1 ...
+2024-10-01T13:00:24.849048Z 0 [Note] InnoDB: PUNCH HOLE support available
+2024-10-01T13:00:24.849061Z 0 [Note] InnoDB: Mutexes and rw_locks use GCC atomic builtins
+2024-10-01T13:00:24.849064Z 0 [Note] InnoDB: Uses event mutexes
+2024-10-01T13:00:24.849066Z 0 [Note] InnoDB: GCC builtin __atomic_thread_fence() is used for memory barrier
+2024-10-01T13:00:24.849068Z 0 [Note] InnoDB: Compressed tables use zlib 1.2.13
+2024-10-01T13:00:24.849070Z 0 [Note] InnoDB: Using Linux native AIO
+2024-10-01T13:00:24.849248Z 0 [Note] InnoDB: Number of pools: 1
+2024-10-01T13:00:24.849334Z 0 [Note] InnoDB: Using CPU crc32 instructions
+2024-10-01T13:00:24.850284Z 0 [Note] InnoDB: Initializing buffer pool, total size = 128M, instances = 1, chunk size = 128M
+2024-10-01T13:00:24.855467Z 0 [Note] InnoDB: Completed initialization of buffer pool
+
+...
+
+```
+### 3. Создан свой оператор, который реализовывать функционал удовлетворяющий условиям ДЗ.
+
+- При создании объекта `MySQL` оператор будет создавать:
+  - Deployment с указанным образом MySQL.
+  - Service типа `ClusterIP`.
+  - PersistentVolume (PV) и PersistentVolumeClaim (PVC) с заданным размером и `StorageClass`.
+- При удалении объекта `MySQL` оператор будет удалять созданные ресурсы.
+
+---
+
+### Установка Operator SDK
+
+1. **Установка `Go` (необходим для Operator SDK):**
+
+```bash
+wget https://golang.org/dl/go1.17.6.linux-amd64.tar.gz
+sudo tar -C /usr/local -xzf go1.17.6.linux-amd64.tar.gz
+export PATH=$PATH:/usr/local/go/bin
+```
+
+2. **Установка `Operator SDK`:**
+
+```bash
+curl -LO https://github.com/operator-framework/operator-sdk/releases/download/v1.15.0/operator-sdk_linux_amd64
+chmod +x operator-sdk_linux_amd64
+sudo mv operator-sdk_linux_amd64 /usr/local/bin/operator-sdk
+```
+
+3.   **Проверка установки:**
+
+```bash
+operator-sdk version
+```
+
+---
+
+### Инициализация проекта оператора
+
+1. **Создаем директорию для проекта и переходим в нее:**
+
+```bash
+mkdir mysql-operator
+cd mysql-operator
+```
+
+2. **Инициализируем новый `Ansible-оператор`:**
+
+```bash
+operator-sdk init --plugins=ansible --domain=otus.homework 
+```
+
+---
+
+### Создание API и CRD
+
+1. **Создайте API для ресурса `MySQL`:**
+
+```bash
+operator-sdk create api --group=otus.homework --version=v1 --kind=MySQL --generate-role
+```
+
+  Это создаст структуру каталогов и файлов для вашего CRD и соответствующих Ansible-ролей.
+
+2. **Обновлен CRD с необходимыми полями и валидацией. Файл `config/crd/bases/mysql.otus.homework_mysqls.yaml`.**
+
+```yaml
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: mysqls.mysql.otus.homework
+spec:
+  group: mysql.otus.homework
+  names:
+    kind: MySQL
+    listKind: MySQLList
+    plural: mysqls
+    singular: mysql
+  scope: Namespaced
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required:
+                - image
+                - database
+                - password
+                - storage_size
+                - storageClassName
+              properties:
+                image:
+                  type: string
+                database:
+                  type: string
+                password:
+                  type: string
+                storage_size:
+                  type: string
+                storageClassName:
+                  type: string
+      subresources:
+        status: {}
+```
+---
+
+### Разработка Ansible-ролей
+
+1. **Переходим в директорию роли:**
+
+```bash
+cd roles/mysql
+```
+
+2. **Редактируем файл `tasks/main.yml`, чтобы описать логику создания и удаления ресурсов.**
+
+   **Создание файла `tasks/main.yml`:**
+
+```yaml
+---
+
+- name: Print available variables
+  debug:
+    var: vars
+
+- name: Check if resource is being deleted
+  when: meta.deletionTimestamp is defined
+  include_tasks: "../handlers/main.yml"
+
+- name: Exit if resource is being deleted and skip further tasks
+  when: meta.deletionTimestamp is defined
+  debug:
+    msg: "Resource is being deleted"
+  vars:
+    ansible_skip_tasks: true
+
+# +kubebuilder:permissions:verbs=create;update;delete;get;list;watch,resources=persistentvolumeclaims
+- name: Create PVC
+  k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: "{{ meta.name }}-pvc"
+        namespace: "{{ meta.namespace }}"
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: "{{ spec.storage_size }}"
+        storageClassName: "{{ spec.storageClassName }}"
+
+- name: Create Deployment
+  k8s:
+    state: present
+    definition:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: "{{ meta.name }}"
+        namespace: "{{ meta.namespace }}"
+      spec:
+        replicas: 1
+        selector:
+          matchLabels:
+            app: "{{ meta.name }}"
+        template:
+          metadata:
+            labels:
+              app: "{{ meta.name }}"
+          spec:
+            containers:
+              - name: mysql
+                image: "{{ spec.image }}"
+                env:
+                  - name: MYSQL_DATABASE
+                    value: "{{ spec.database }}"
+                  - name: MYSQL_ROOT_PASSWORD
+                    value: "{{ spec.password }}"
+                ports:
+                  - containerPort: 3306
+                volumeMounts:
+                  - name: mysql-storage
+                    mountPath: /var/lib/mysql
+            volumes:
+              - name: mysql-storage
+                persistentVolumeClaim:
+                  claimName: "{{ meta.name }}-pvc"
+
+- name: Create Service
+  k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: "{{ meta.name }}"
+        namespace: "{{ meta.namespace }}"
+      spec:
+        type: ClusterIP
+        selector:
+          app: "{{ meta.name }}"
+        ports:
+          - protocol: TCP
+            port: 3306
+            targetPort: 3306
+
+```
+
+   **Удаление ресурсов при удалении CR:**
+
+   Ansible оператор автоматически удаляет созданные ресурсы при удалении кастомного ресурса, если вы используете `k8s` модуль с `state: absent`. Однако в данном случае, поскольку мы используем `state: present`, нам нужно убедиться, что удаление ресурсов происходит автоматически.
+
+   **Добавляем файл `handlers/main.yml`:**
+
+```yaml
+---
+
+- name: Delete Deployment
+  k8s:
+    state: absent
+    kind: Deployment
+    name: "{{ meta.name }}"
+    namespace: "{{ meta.namespace }}"
+
+- name: Delete Service
+  k8s:
+    state: absent
+    kind: Service
+    name: "{{ meta.name }}"
+    namespace: "{{ meta.namespace }}"
+
+- name: Delete PVC
+  k8s:
+    state: absent
+    kind: PersistentVolumeClaim
+    name: "{{ meta.name }}-pvc"
+    namespace: "{{ meta.namespace }}"
+
+```
+
+**Создание файла `./watches.yaml` (Чтобы упростить доступ к данным из metadata и spec, явно определяем переменные `meta` и `spec` в файле watches.yaml):**
+
+```yaml
+---
+# Use the 'create api' subcommand to add watches to this file.
+- version: v1
+  group: mysql.otus.homework
+  kind: MySQL
+  role: mysql
+  vars:
+    meta: "{{ _mysql_otus_homework_mysql.metadata }}"
+    spec: "{{ _mysql_otus_homework_mysql.spec }}"
+#+kubebuilder:scaffold:watch
+```
+
+### Обновляем права доступа (RBAC)
+
+1. **Обновите файл `config/rbac/role.yaml` с минимально необходимыми правами:**
+
+```yaml
+   apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: manager-role
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - ""
+    resources:
+      - persistentvolumeclaims
+      - services
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+  - apiGroups:
+      - apps
+    resources:
+      - deployments
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+```
+---
+
+### Построение и развертывание оператора
+
+1. **Собираем контейнерный образ оператора:**
+
+   Обновляем файл `Makefile`, указав репозиторий:
+
+```makefile
+IMG=<your-dockerhub-username>/mysql-operator:latest
+```
+
+   Строим образ:
+
+```bash
+make docker-build docker-push IMG=<your-dockerhub-username>/mysql-operator:latest
+```
+
+2. **Разверните оператор в кластер (сервис `k8s` от `YC`):**
+
+```bash
+$ make deploy IMG=skyfly534/mysql-operator:01.10.6
+cd config/manager && /home/roman/Infr_k8s/skyfly535_repo/kubernetes-operators/mysql-operator/bin/kustomize edit set image controller=skyfly534/mysql-operator:01.10.6
+/home/roman/Infr_k8s/skyfly535_repo/kubernetes-operators/mysql-operator/bin/kustomize build config/default | kubectl apply -f -
+namespace/mysql-operator-system created
+customresourcedefinition.apiextensions.k8s.io/mysqls.mysql.otus.homework created
+serviceaccount/mysql-operator-controller-manager created
+role.rbac.authorization.k8s.io/mysql-operator-leader-election-role created
+clusterrole.rbac.authorization.k8s.io/mysql-operator-manager-role created
+clusterrole.rbac.authorization.k8s.io/mysql-operator-metrics-reader created
+clusterrole.rbac.authorization.k8s.io/mysql-operator-proxy-role created
+rolebinding.rbac.authorization.k8s.io/mysql-operator-leader-election-rolebinding created
+clusterrolebinding.rbac.authorization.k8s.io/mysql-operator-manager-rolebinding created
+clusterrolebinding.rbac.authorization.k8s.io/mysql-operator-proxy-rolebinding created
+configmap/mysql-operator-manager-config created
+service/mysql-operator-controller-manager-metrics-service created
+deployment.apps/mysql-operator-controller-manager created
+
+$ kubectl logs deployment/mysql-operator-controller-manager -n mysql-operator-system -c manager
+{"level":"info","ts":1727791527.5388258,"logger":"cmd","msg":"Version","Go Version":"go1.16.13","GOOS":"linux","GOARCH":"amd64","ansible-operator":"v1.15.0","commit":"f6326e832a8a5e5453d0ad25e86714a0de2c0fc8"}
+{"level":"info","ts":1727791527.539148,"logger":"cmd","msg":"Watch namespaces not configured by environment variable WATCH_NAMESPACE or file. Watching all namespaces.","Namespace":""}
+{"level":"info","ts":1727791527.5794044,"logger":"controller-runtime.metrics","msg":"metrics server is starting to listen","addr":"127.0.0.1:8080"}
+{"level":"info","ts":1727791527.5800602,"logger":"watches","msg":"Environment variable not set; using default value","envVar":"ANSIBLE_VERBOSITY_MYSQL_MYSQL_OTUS_HOMEWORK","default":2}
+{"level":"info","ts":1727791527.5801437,"logger":"cmd","msg":"Environment variable not set; using default value","Namespace":"","envVar":"ANSIBLE_DEBUG_LOGS","ANSIBLE_DEBUG_LOGS":false}
+{"level":"info","ts":1727791527.5801656,"logger":"ansible-controller","msg":"Watching resource","Options.Group":"mysql.otus.homework","Options.Version":"v1","Options.Kind":"MySQL"}
+{"level":"info","ts":1727791527.5818841,"logger":"proxy","msg":"Starting to serve","Address":"127.0.0.1:8888"}
+I1001 14:05:27.582040       7 leaderelection.go:248] attempting to acquire leader lease mysql-operator-system/mysql-operator...
+{"level":"info","ts":1727791527.5821953,"msg":"starting metrics server","path":"/metrics"}
+```
+
+**Образ в моей репе Docker Hub**
+
+### skyfly534/mysql-operator:01.10.6
+---
+
+### Создание экземпляра MySQL
+
+1. **Создан файл `config/samples/otus.homework_v1_mysql.yaml`:**
+
+   ```yaml
+   apiVersion: otus.homework/v1
+   kind: MySQL
+   metadata:
+     name: mysql-instance
+     namespace: default
+   spec:
+     image: mysql:5.7
+     database: mydb
+     password: mypassword
+     storage_size: 1Gi
+     storageClassName: yc-network-hdd
+   ```
+
+2. **Применяем манифест:**
+
+```bash
+kubectl apply -f config/samples/mysql_v1_mysql.yaml
+```
+
+---
+
+### Проверяем
+
+```bash
+$ kubectl get pods -n default
+NAME                             READY   STATUS     RESTARTS      AGE
+mysql-instance-5fd67b867-w6dr5   1/1     Running    0             70s
+
+$ kubectl get services
+NAME             TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)    AGE
+kubernetes       ClusterIP   10.96.128.1    <none>        443/TCP    80m
+mysql-instance   ClusterIP   10.96.144.83   <none>        3306/TCP   105s
+
+$ kubectl get pvc
+NAME                 STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS     AGE
+mysql-instance-pvc   Bound    pvc-647c2ea0-3f69-4302-9093-0c7a5e05024e   2Gi        RWO            yc-network-hdd   115s
+```
+  
+Можно настроить оператор для работы в кластерном режиме, изменив настройки в `config/manager/manager.yaml`.
+
+---
+
 # HW6 Шаблонизация манифестов приложения, использование Helm. Установка community Helm charts.
 
 ## В процессе выполнения ДЗ выполнены следующие мероприятия:
