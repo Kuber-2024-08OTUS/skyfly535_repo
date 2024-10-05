@@ -71,7 +71,7 @@ data:
         }
     }
 ```
-### **3. Создан `Deployment` для nginx с необходимыми настройками для `Prometheus Exporte`**
+### **3. Создан `Deployment` для nginx с необходимыми настройками для `Prometheus Exporter`.**
 
 Реализован вариант включения экспортера при помощи `sidecar контейнером`.
 
@@ -143,7 +143,7 @@ spec:
 
 ```
 
-### **4. Создан `Service` Deployment-а для экспонирования метрик**
+### **4. Создан `Service` Deployment-а для экспонирования метрик.**
 
 **b. Service (`nginx-service.yaml`):**
 
@@ -170,7 +170,7 @@ spec:
 
 ---
 
-### **5. Создан `ServiceMonitor` для сбора метрик**
+### **5. Создан `ServiceMonitor` для сбора метрик.**
 
 ServiceMonitor (`nginx-servicemonitor.yaml`)
 
