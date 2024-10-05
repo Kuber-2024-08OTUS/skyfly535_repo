@@ -21,6 +21,353 @@ skyfly535 kubernetes repository
 
 - [HW7 Создание собственного CRD.](#hw7-создание-собственного-crd)
 
+- [HW8 Мониторинг приложения в кластере.](#hw8-мониторинг-приложения-в-кластере)
+
+# HW8 Мониторинг приложения в кластере.
+
+## В процессе выполнения ДЗ выполнены следующие мероприятия:
+
+### 1. Установка `Prometheus Operator` через Helm-чарт.
+
+**1.1 Добавка репозитория и обновление его:**
+
+```bash
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo update
+```
+
+**1.2 Установка Prometheus Operator:**
+
+```bash
+helm install prometheus-operator prometheus-community/kube-prometheus-stack
+```
+### 2. Создан манифест `CM-Nginx.yaml (ConfigMap)`, который содержит необходимую `конфигурацию NGINX` для дальнейшего монтирования `Deployment`.
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-config
+  namespace: default
+data:
+  nginx.conf: |
+    events {}
+
+    http {
+        server {
+            listen 80;
+
+            location / {
+                root /usr/share/nginx/html;  # Путь к директории, откуда NGINX будет обслуживать файлы
+                index index.html;            # Главная страница, которую NGINX будет отображать по запросу "/"
+                try_files $uri $uri/ =404;   # Если файл не найден, вернется ошибка 404
+            }
+
+            # Endpoint для метрик
+            location /stub_status {
+                stub_status;
+                allow all;  # Рекомендуется ограничить доступ по IP в продакшене
+            }
+        }
+    }
+```
+### **3. Создан `Deployment` для nginx с необходимыми настройками для `Prometheus Exporte`**
+
+Реализован вариант включения экспортера при помощи `sidecar контейнером`.
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: homework-deployment
+  labels:
+    app: nginx
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: nginx-config-volume
+          mountPath: /etc/nginx/nginx.conf
+          subPath: nginx.conf
+        - name: homework-volume
+          mountPath: /homework
+        lifecycle:
+          preStop:
+            exec:
+              command: ["rm", "/homework/index.html"]
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            cp /homework/index.html /usr/share/nginx/html/index.html && \
+            exec nginx -g 'daemon off;' -c /etc/nginx/nginx.conf
+        readinessProbe:
+          exec:
+            command:
+            - cat
+            - /homework/index.html
+          initialDelaySeconds: 5
+          periodSeconds: 10
+      - name: nginx-prometheus-exporter # включение экспортера
+        image: nginx/nginx-prometheus-exporter:latest
+        args:
+          - -nginx.scrape-uri=http://localhost/stub_status
+        ports:
+        - containerPort: 9113
+      initContainers:
+      - name: init-container
+        image: busybox
+        command: ["/bin/sh", "-c"]
+        args:
+          - echo "Hello, OTUS! Homework 8.0 Metrics." > /homework/index.html
+        volumeMounts:
+        - name: homework-volume
+          mountPath: /homework
+      volumes:
+      - name: nginx-config-volume
+        configMap:
+          name: nginx-config
+      - name: homework-volume
+        emptyDir: {}
+
+```
+
+### **4. Создан `Service` Deployment-а для экспонирования метрик**
+
+**b. Service (`nginx-service.yaml`):**
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-service
+  labels:
+    app: nginx
+spec:
+  selector:
+    app: nginx
+  ports:
+    - name: http 
+      protocol: TCP
+      port: 80
+      targetPort: 80
+    - name: metrics
+      port: 9113
+      targetPort: 9113
+  type: LoadBalancer
+```
+
+---
+
+### **4. Создан `ServiceMonitor` для сбора метрик**
+
+ServiceMonitor (`nginx-servicemonitor.yaml`)
+
+```yaml
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: nginx-servicemonitor
+  labels:
+    app: nginx
+spec:
+  selector:
+    matchLabels:
+      app: nginx
+  endpoints:
+  - port: metrics
+    interval: 15s
+```
+
+---
+
+### **Применяем манифесты **
+
+```bash
+kubectl apply -f CM-Nginx.yaml
+kubectl apply -f deployment.yaml
+kubectl apply -f service.yaml
+kubectl apply -f nginx-servicemonitor.yaml
+```
+
+---
+
+### **Проверяем**
+
+```bash
+$ minikube service nginx-service
+|-----------|---------------|--------------|---------------------------|
+| NAMESPACE |     NAME      | TARGET PORT  |            URL            |
+|-----------|---------------|--------------|---------------------------|
+| default   | nginx-service | http/80      | http://192.168.49.2:30246 |
+|           |               | metrics/9113 | http://192.168.49.2:31544 |
+|-----------|---------------|--------------|---------------------------|
+
+[default nginx-service http/80
+metrics/9113 http://192.168.49.2:30246
+http://192.168.49.2:31544]
+
+$ curl http://192.168.49.2:30246/
+Hello, OTUS! Homework 8.0 Metrics.
+
+$ curl http://192.168.49.2:31544/metrics
+# HELP go_gc_duration_seconds A summary of the pause duration of garbage collection cycles.
+# TYPE go_gc_duration_seconds summary
+go_gc_duration_seconds{quantile="0"} 0
+go_gc_duration_seconds{quantile="0.25"} 0
+go_gc_duration_seconds{quantile="0.5"} 0
+go_gc_duration_seconds{quantile="0.75"} 0
+go_gc_duration_seconds{quantile="1"} 0
+go_gc_duration_seconds_sum 0
+go_gc_duration_seconds_count 0
+# HELP go_goroutines Number of goroutines that currently exist.
+# TYPE go_goroutines gauge
+go_goroutines 13
+# HELP go_info Information about the Go environment.
+# TYPE go_info gauge
+go_info{version="go1.22.5"} 1
+# HELP go_memstats_alloc_bytes Number of bytes allocated and still in use.
+# TYPE go_memstats_alloc_bytes gauge
+go_memstats_alloc_bytes 1.40464e+06
+# HELP go_memstats_alloc_bytes_total Total number of bytes allocated, even if freed.
+# TYPE go_memstats_alloc_bytes_total counter
+go_memstats_alloc_bytes_total 1.40464e+06
+# HELP go_memstats_buck_hash_sys_bytes Number of bytes used by the profiling bucket hash table.
+# TYPE go_memstats_buck_hash_sys_bytes gauge
+go_memstats_buck_hash_sys_bytes 8154
+# HELP go_memstats_frees_total Total number of frees.
+# TYPE go_memstats_frees_total counter
+go_memstats_frees_total 0
+# HELP go_memstats_gc_sys_bytes Number of bytes used for garbage collection system metadata.
+# TYPE go_memstats_gc_sys_bytes gauge
+go_memstats_gc_sys_bytes 1.478384e+06
+# HELP go_memstats_heap_alloc_bytes Number of heap bytes allocated and still in use.
+# TYPE go_memstats_heap_alloc_bytes gauge
+go_memstats_heap_alloc_bytes 1.40464e+06
+# HELP go_memstats_heap_idle_bytes Number of heap bytes waiting to be used.
+# TYPE go_memstats_heap_idle_bytes gauge
+go_memstats_heap_idle_bytes 3.93216e+06
+# HELP go_memstats_heap_inuse_bytes Number of heap bytes that are in use.
+# TYPE go_memstats_heap_inuse_bytes gauge
+go_memstats_heap_inuse_bytes 3.784704e+06
+# HELP go_memstats_heap_objects Number of allocated objects.
+# TYPE go_memstats_heap_objects gauge
+go_memstats_heap_objects 1334
+# HELP go_memstats_heap_released_bytes Number of heap bytes released to OS.
+# TYPE go_memstats_heap_released_bytes gauge
+go_memstats_heap_released_bytes 3.93216e+06
+# HELP go_memstats_heap_sys_bytes Number of heap bytes obtained from system.
+# TYPE go_memstats_heap_sys_bytes gauge
+go_memstats_heap_sys_bytes 7.716864e+06
+# HELP go_memstats_last_gc_time_seconds Number of seconds since 1970 of last garbage collection.
+# TYPE go_memstats_last_gc_time_seconds gauge
+go_memstats_last_gc_time_seconds 0
+# HELP go_memstats_lookups_total Total number of pointer lookups.
+# TYPE go_memstats_lookups_total counter
+go_memstats_lookups_total 0
+# HELP go_memstats_mallocs_total Total number of mallocs.
+# TYPE go_memstats_mallocs_total counter
+go_memstats_mallocs_total 1334
+# HELP go_memstats_mcache_inuse_bytes Number of bytes in use by mcache structures.
+# TYPE go_memstats_mcache_inuse_bytes gauge
+go_memstats_mcache_inuse_bytes 4800
+# HELP go_memstats_mcache_sys_bytes Number of bytes used for mcache structures obtained from system.
+# TYPE go_memstats_mcache_sys_bytes gauge
+go_memstats_mcache_sys_bytes 15600
+# HELP go_memstats_mspan_inuse_bytes Number of bytes in use by mspan structures.
+# TYPE go_memstats_mspan_inuse_bytes gauge
+go_memstats_mspan_inuse_bytes 64320
+# HELP go_memstats_mspan_sys_bytes Number of bytes used for mspan structures obtained from system.
+# TYPE go_memstats_mspan_sys_bytes gauge
+go_memstats_mspan_sys_bytes 65280
+# HELP go_memstats_next_gc_bytes Number of heap bytes when next garbage collection will take place.
+# TYPE go_memstats_next_gc_bytes gauge
+go_memstats_next_gc_bytes 4.194304e+06
+# HELP go_memstats_other_sys_bytes Number of bytes used for other system allocations.
+# TYPE go_memstats_other_sys_bytes gauge
+go_memstats_other_sys_bytes 1.15951e+06
+# HELP go_memstats_stack_inuse_bytes Number of bytes in use by the stack allocator.
+# TYPE go_memstats_stack_inuse_bytes gauge
+go_memstats_stack_inuse_bytes 655360
+# HELP go_memstats_stack_sys_bytes Number of bytes obtained from system for stack allocator.
+# TYPE go_memstats_stack_sys_bytes gauge
+go_memstats_stack_sys_bytes 655360
+# HELP go_memstats_sys_bytes Number of bytes obtained from system.
+# TYPE go_memstats_sys_bytes gauge
+go_memstats_sys_bytes 1.1099152e+07
+# HELP go_threads Number of OS threads created.
+# TYPE go_threads gauge
+go_threads 9
+# HELP nginx_connections_accepted Accepted client connections
+# TYPE nginx_connections_accepted counter
+nginx_connections_accepted 6
+# HELP nginx_connections_active Active client connections
+# TYPE nginx_connections_active gauge
+nginx_connections_active 1
+# HELP nginx_connections_handled Handled client connections
+# TYPE nginx_connections_handled counter
+nginx_connections_handled 6
+# HELP nginx_connections_reading Connections where NGINX is reading the request header
+# TYPE nginx_connections_reading gauge
+nginx_connections_reading 0
+# HELP nginx_connections_waiting Idle client connections
+# TYPE nginx_connections_waiting gauge
+nginx_connections_waiting 0
+# HELP nginx_connections_writing Connections where NGINX is writing the response back to the client
+# TYPE nginx_connections_writing gauge
+nginx_connections_writing 1
+# HELP nginx_exporter_build_info A metric with a constant '1' value labeled by version, revision, branch, goversion from which nginx_exporter was built, and the goos and goarch for the build.
+# TYPE nginx_exporter_build_info gauge
+nginx_exporter_build_info{branch="HEAD",goarch="amd64",goos="linux",goversion="go1.22.5",revision="9522f4e39ee1aed817d7d70a89514ccc0ae1594a",tags="unknown",version="1.3.0"} 1
+# HELP nginx_http_requests_total Total http requests
+# TYPE nginx_http_requests_total counter
+nginx_http_requests_total 6
+# HELP nginx_up Status of the last metric scrape
+# TYPE nginx_up gauge
+nginx_up 1
+# HELP process_cpu_seconds_total Total user and system CPU time spent in seconds.
+# TYPE process_cpu_seconds_total counter
+process_cpu_seconds_total 0.01
+# HELP process_max_fds Maximum number of open file descriptors.
+# TYPE process_max_fds gauge
+process_max_fds 1.048576e+06
+# HELP process_open_fds Number of open file descriptors.
+# TYPE process_open_fds gauge
+process_open_fds 11
+# HELP process_resident_memory_bytes Resident memory size in bytes.
+# TYPE process_resident_memory_bytes gauge
+process_resident_memory_bytes 1.1513856e+07
+# HELP process_start_time_seconds Start time of the process since unix epoch in seconds.
+# TYPE process_start_time_seconds gauge
+process_start_time_seconds 1.72812581329e+09
+# HELP process_virtual_memory_bytes Virtual memory size in bytes.
+# TYPE process_virtual_memory_bytes gauge
+process_virtual_memory_bytes 1.26662656e+09
+# HELP process_virtual_memory_max_bytes Maximum amount of virtual memory available in bytes.
+# TYPE process_virtual_memory_max_bytes gauge
+process_virtual_memory_max_bytes 1.8446744073709552e+19
+# HELP promhttp_metric_handler_requests_in_flight Current number of scrapes being served.
+# TYPE promhttp_metric_handler_requests_in_flight gauge
+promhttp_metric_handler_requests_in_flight 1
+# HELP promhttp_metric_handler_requests_total Total number of scrapes by HTTP status code.
+# TYPE promhttp_metric_handler_requests_total counter
+promhttp_metric_handler_requests_total{code="200"} 2
+promhttp_metric_handler_requests_total{code="500"} 0
+promhttp_metric_handler_requests_total{code="503"} 0
+```
+---
+
 # HW7 Создание собственного CRD.
 
 ## В процессе выполнения ДЗ выполнены следующие мероприятия:

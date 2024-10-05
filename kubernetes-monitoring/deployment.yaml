@@ -1,0 +1,64 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: homework-deployment
+  labels:
+    app: nginx
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: nginx-config-volume
+          mountPath: /etc/nginx/nginx.conf
+          subPath: nginx.conf
+        - name: homework-volume
+          mountPath: /homework
+        lifecycle:
+          preStop:
+            exec:
+              command: ["rm", "/homework/index.html"]
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            cp /homework/index.html /usr/share/nginx/html/index.html && \
+            exec nginx -g 'daemon off;' -c /etc/nginx/nginx.conf
+        readinessProbe:
+          exec:
+            command:
+            - cat
+            - /homework/index.html
+          initialDelaySeconds: 5
+          periodSeconds: 10
+      - name: nginx-prometheus-exporter
+        image: nginx/nginx-prometheus-exporter:latest
+        args:
+          - -nginx.scrape-uri=http://localhost/stub_status
+        ports:
+        - containerPort: 9113
+      initContainers:
+      - name: init-container
+        image: busybox
+        command: ["/bin/sh", "-c"]
+        args:
+          - echo "Hello, OTUS! Homework 8.0 Metrics." > /homework/index.html
+        volumeMounts:
+        - name: homework-volume
+          mountPath: /homework
+      volumes:
+      - name: nginx-config-volume
+        configMap:
+          name: nginx-config
+      - name: homework-volume
+        emptyDir: {}
