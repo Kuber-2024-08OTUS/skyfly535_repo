@@ -27,7 +27,7 @@ skyfly535 kubernetes repository
 
 ## В процессе выполнения ДЗ выполнены следующие мероприятия:
 
-### 1. Установка `Prometheus Operator` через Helm-чарт.
+### 1. Установлен `Prometheus Operator` через Helm-чарт.
 
 **1.1 Добавка репозитория и обновление его:**
 
@@ -170,7 +170,7 @@ spec:
 
 ---
 
-### **4. Создан `ServiceMonitor` для сбора метрик**
+### **5. Создан `ServiceMonitor` для сбора метрик**
 
 ServiceMonitor (`nginx-servicemonitor.yaml`)
 
