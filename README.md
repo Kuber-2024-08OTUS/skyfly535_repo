@@ -23,6 +23,198 @@ skyfly535 kubernetes repository
 
 - [HW8 Мониторинг приложения в кластере.](#hw8-мониторинг-приложения-в-кластере)
 
+- [HW9 Сервисы централизованного логирования для Kubernetes.](#hw9-сервисы-централизованного-логирования-для-kubernetes)
+
+# HW9 Сервисы централизованного логирования для Kubernetes.
+
+## В процессе выполнения ДЗ выполнены следующие мероприятия:
+
+### **1. Проверена работ ранее подготовленного интерфейса командной строки Yandex Cloud**.
+
+
+```bash
+yc vpc network list
++----------------------+---------+
+|          ID          |  NAME   |
++----------------------+---------+
+| enpj03ta8*********** | default |
++----------------------+---------+
+```
+
+### **2. Нагуглен и адаптирован скрипт, разворачивающий инфраструктуру удовлетворяющую условиям ДЗ.**
+
+```sh
+# Создание сервисного аккаунта для работы в YC
+yc iam service-account create --name k8s-cluster-logging
+FOLDER_ID=$(yc config get folder-id)
+SA_ID=$(yc iam service-account get --name k8s-cluster-logging --format json | jq .id -r)
+# Назначение роли admin сервисному аккаунту
+yc resource-manager folder add-access-binding --id $FOLDER_ID  --role admin --subject serviceAccount:$SA_ID
+# Создание статического ключа доступа для сервисного аккаунта, который можно использовать для доступа к Yandex Object Storage
+if [ ! -f .sa.secret ]; then
+  yc iam access-key create  --service-account-id $SA_ID >  .sa.secret
+fi 
+# Создание переменных окружения с параметрами созданного секрета
+export accessKeyId=$(cat .sa.secret | grep 'key_id' | awk -F ':' '{print $2}')
+export secretAccessKey=$(cat .sa.secret | grep 'secret' | awk -F ':' '{print $2}')
+
+# Шаблонизировоние файла переменных для loki
+cat loki/values.yaml.tpl | envsubst > loki/values.yaml
+
+# Создание кластера managed-kubernetes в YC
+yc managed-kubernetes cluster create \
+ --name k8s-logging --network-name default \
+ --zone ru-central1-a  --subnet-name k8s \
+ --public-ip \
+ --service-account-id ${SA_ID} --node-service-account-id ${SA_ID} 
+
+# Создание групп узлов (Node Groups)
+# Группа узлов для рабочих нагрузок
+ yc managed-kubernetes node-group create   \
+ --name  k8s-logging-workers \
+ --cluster-name k8s-logging \
+ --cores 2 \
+ --memory 4 \
+ --core-fraction 5 \
+ --preemptible \
+ --fixed-size 1 \
+ --network-interface subnets=k8s,ipv4-address=nat
+# Группа узлов для инфраструктуры
+ yc managed-kubernetes node-group create \
+ --name  k8s-logging-infra \
+ --cluster-name k8s-logging \
+ --cores 2 \
+ --memory 4 \
+ --core-fraction 5 \
+ --fixed-size 1 \
+ --preemptible \
+ --node-labels node-role=infra \
+ --network-interface subnets=k8s,ipv4-address=nat
+# Регистррация кластер локально
+yc managed-kubernetes cluster get-credentials --external --name k8s-logging --force
+# Создание taint для узлов инфраструктуры
+kubectl taint nodes -l node-role=infra node-role=infra:NoSchedule
+# Создание namespase monitoring
+kubectl create ns monitoring
+
+# Создание S3 бакетов для хранения логов
+yc storage bucket create  monitoring-loki-chunks
+yc storage bucket create  monitoring-loki-ruler
+yc storage bucket create  monitoring-loki-admin
+# Предоставление созданному сервисному акаунту прав на созданные S3 бакеты
+yc storage bucket update --name monitoring-loki-chunks  \
+    --grants grant-type=grant-type-account,grantee-id=${SA_ID},permission=permission-full-control
+
+yc storage bucket update --name monitoring-loki-ruler   \
+    --grants grant-type=grant-type-account,grantee-id=${SA_ID},permission=permission-full-control
+
+yc storage bucket update --name monitoring-loki-admin  \
+    --grants grant-type=grant-type-account,grantee-id=${SA_ID},permission=permission-full-control
+
+# Запуск установки Helm loki
+cd loki && helmfile apply; cd ..
+# Запуск установки Helm promtail
+cd promtail && helmfile apply; cd ..
+# Запуск установки Helm grafana
+cd grafana && helmfile apply; cd ..
+```
+
+```bash
+/kubernetes-logging$ sh install.sh 
+done (1s)
+id: ajei14g8nj**********
+folder_id: b1ghhcttru**********
+created_at: "2024-10-18T12:29:44.867445870Z"
+name: k8s-cluster-logging
+
+done (3s)
+effective_deltas:
+  - action: ADD
+    access_binding:
+      role_id: admin
+      subject:
+        id: ajei14g8nj**********
+        type: serviceAccount
+
+done (8m2s)
+
+...
+
+Listing releases matching ^grafana$
+grafana	monitoring	1       	2024-10-18 22:46:02.737090945 +1000 +10	deployed	grafana-7.3.8	10.4.1     
+
+
+UPDATED RELEASES:
+NAME      CHART             VERSION   DURATION
+grafana   grafana/grafana   7.3.8          23s
+```
+
+
+### **3. Произведена проверка развернутой инфраструктуры.**
+
+- **3.1** Вся нагрузка развернута (за исключением одного poda promatil) на инфраструктурной ноде.
+
+```bash
+$ kubectl get nodes -o custom-columns=NAME:.metadata.name,TAINTS:.spec.taints
+NAME                        TAINTS
+cl128qd0q29qcm4ckion-ohim   [map[effect:NoSchedule key:node-role value:infra]]
+cl1bl0ebne1kivk33qbc-ymoq   <none>
+
+$ kubectl get pods -n monitoring -o wide
+NAME                            READY   STATUS    RESTARTS   AGE   IP              NODE                        NOMINATED NODE   READINESS GATES
+grafana-77d7446cb4-lkrq6        1/1     Running   0          43m   10.112.129.10   cl128qd0q29qcm4ckion-ohim   <none>           <none>
+loki-backend-0                  2/2     Running   0          44m   10.112.129.8    cl128qd0q29qcm4ckion-ohim   <none>           <none>
+loki-chunks-cache-0             2/2     Running   0          44m   10.112.129.6    cl128qd0q29qcm4ckion-ohim   <none>           <none>
+loki-gateway-5c7d554f54-zlh2r   1/1     Running   0          44m   10.112.129.3    cl128qd0q29qcm4ckion-ohim   <none>           <none>
+loki-read-7d75cc8694-br594      1/1     Running   0          44m   10.112.129.4    cl128qd0q29qcm4ckion-ohim   <none>           <none>
+loki-results-cache-0            2/2     Running   0          44m   10.112.129.5    cl128qd0q29qcm4ckion-ohim   <none>           <none>
+loki-write-0                    1/1     Running   0          44m   10.112.129.7    cl128qd0q29qcm4ckion-ohim   <none>           <none>
+promatil-promtail-hwhlh         1/1     Running   0          43m   10.112.128.8    cl1bl0ebne1kivk33qbc-ymoq   <none>           <none>
+promatil-promtail-z6dsx         1/1     Running   0          43m   10.112.129.9    cl128qd0q29qcm4ckion-ohim   <none>           <none>
+```
+
+- **3.2** Созданы необходимые `S3` бакеты.
+
+```bash
+$ yc storage bucket list
++------------------------+----------------------+----------+-----------------------+---------------------+
+|          NAME          |      FOLDER ID       | MAX SIZE | DEFAULT STORAGE CLASS |     CREATED AT      |
++------------------------+----------------------+----------+-----------------------+---------------------+
+| monitoring-loki-chunks | b1ghhcttrug793gc11tt |        0 | STANDARD              | 2024-10-18 12:24:35 |
+| monitoring-loki-ruler  | b1ghhcttrug793gc11tt |        0 | STANDARD              | 2024-10-18 12:24:41 |
+| monitoring-loki-admin  | b1ghhcttrug793gc11tt |        0 | STANDARD              | 2024-10-18 12:24:47 |
++------------------------+----------------------+----------+-----------------------+---------------------+
+
+```
+
+- **3.3** Проверена визуализаця информации логирования в Grafana.
+
+Пользуемся "выхлопом" `Helm чарта Grafana`
+
+```bash
+1. Get your 'admin' user password by running:
+
+   kubectl get secret --namespace monitoring grafana -o jsonpath="{.data.admin-password}" | base64 --decode ; echo
+
+
+2. The Grafana server can be accessed via port 80 on the following DNS name from within your cluster:
+
+   grafana.monitoring.svc.cluster.local
+
+   Get the Grafana URL to visit by running these commands in the same shell:
+     export POD_NAME=$(kubectl get pods --namespace monitoring -l "app.kubernetes.io/name=grafana,app.kubernetes.io/instance=grafana" -o jsonpath="{.items[0].metadata.name}")
+     kubectl --namespace monitoring port-forward $POD_NAME 3000
+
+3. Login with the password from step 1 and the username: admin
+#################################################################################
+######   WARNING: Persistence is disabled!!! You will lose your data when   #####
+######            the Grafana pod is terminated.                            #####
+#################################################################################
+```
+наблюдаем следующую картину
+
+![Alt text](./kubernetes-logging/image/logining.jpg)
+
 # HW8 Мониторинг приложения в кластере.
 
 ## В процессе выполнения ДЗ выполнены следующие мероприятия:
