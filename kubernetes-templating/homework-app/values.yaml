@@ -87,6 +87,7 @@ redis:
 storageClass:
   enabled: true
   name: my-storage-class
-  provisioner: k8s.io/minikube-hostpath
+  provisioner: disk-csi-driver.mks.ycloud.io
+  # provisioner: k8s.io/minikube-hostpath
   reclaimPolicy: Retain
   volumeBindingMode: Immediate
