@@ -7,8 +7,9 @@ metadata:
     nginx.ingress.kubernetes.io/rewrite-target: /index.html
     #nginx.ingress.kubernetes.io/rewrite-target: /$2
 spec:
+  ingressClassName: nginx
   rules:
-  - host: homework.otus
+  - host: homework.otus-skyfly.ru
     http:
       paths:
       - path: /index.html
