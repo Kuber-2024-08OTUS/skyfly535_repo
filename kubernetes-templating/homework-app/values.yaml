@@ -20,11 +20,11 @@ service:
 
 ingress:
   enabled: true
-  className: ""
+  className: nginx
   annotations:
     nginx.ingress.kubernetes.io/rewrite-target: /index.html
   hosts:
-    - host: homework.otus
+    - host: homework.otus-skyfly.ru
       paths:
         - path: /index.html
           pathType: Prefix
@@ -37,7 +37,7 @@ metricsIngress:
   annotations:
     nginx.ingress.kubernetes.io/rewrite-target: /metrics.html
   hosts:
-    - host: homework.otus
+    - host: homework.otus-skyfly.ru
       paths:
         - path: /metrics
           pathType: Exact
