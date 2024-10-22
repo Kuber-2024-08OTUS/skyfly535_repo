@@ -33,7 +33,7 @@ ingress:
   tls: []
 
 metricsIngress:
-  enabled: true
+  enabled: false
   annotations:
     nginx.ingress.kubernetes.io/rewrite-target: /metrics.html
   hosts:
