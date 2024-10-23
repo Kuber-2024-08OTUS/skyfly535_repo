@@ -1,0 +1,18 @@
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kubernetes-networks
+spec:
+  destination:
+    namespace: homework
+    server: 'https://kubernetes.default.svc'
+  source:
+    path: kubernetes-networks
+    repoURL: 'https://github.com/Kuber-2024-08OTUS/skyfly535_repo.git'
+    targetRevision: HEAD
+  project: otus
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
