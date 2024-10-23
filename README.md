@@ -25,11 +25,397 @@ skyfly535 kubernetes repository
 
 - [HW9 Сервисы централизованного логирования для Kubernetes.](#hw9-сервисы-централизованного-логирования-для-kubernetes)
 
+- [HW10 GitOps и инструменты поставки.](#hw10-gitops-и-инструменты-поставки)
+
+# HW10 GitOps и инструменты поставки.
+
+## В процессе выполнения ДЗ выполнены следующие мероприятия:
+
+### **1. Написаны манифесты `Terraform` для установки кластера Kubernetes удовлетворяющего условиям ДЗ в `Yandex Cloud`.**
+
+```
+# Создание Kubernetes-кластера
+
+resource "yandex_kubernetes_cluster" "yc_cluster" {
+  name                    = var.cluster_name
+
+  master {
+    zonal {
+      zone      = var.zone
+      subnet_id = var.subnet_id
+    }
+    version               = var.k8s_version
+    public_ip             = true
+  }
+
+  network_id              = var.network_id
+
+  service_account_id      = var.service_account_id
+  node_service_account_id = var.service_account_id
+
+  release_channel         = "RAPID"
+  network_policy_provider = "CALICO"
+}
+
+# Создание групп узлов для рабочих нагрузок
+resource "yandex_kubernetes_node_group" "workload_node_group" {
+  cluster_id  = yandex_kubernetes_cluster.yc_cluster.id
+
+  name        = "${var.cluster_name}-workload"
+  version     = var.k8s_version
+  count       = var.workload_nodes_count
+
+  instance_template {
+    platform_id = "standard-v2"
+
+    network_interface {
+      nat                = true
+      subnet_ids         = [var.subnet_id]
+    }
+
+    resources {
+      memory = var.node_memory_size
+      cores  = var.node_cpu_count
+    }
+
+    boot_disk {
+      type = "network-ssd"
+      size = var.node_disk_size
+    }
+
+    scheduling_policy {
+      preemptible = false
+    }
+
+    container_runtime {
+      type = "containerd"
+    }
+  }
+
+  scale_policy {
+    fixed_scale {
+      size = 1
+    }
+  }
+  
+  # создана метка для узлов этой группы для управления раскаткой нагрузки
+  
+  node_labels = {
+    homework = "true"
+  }
+
+  
+}
+
+# Создание групп узлов для инфраструктуры
+resource "yandex_kubernetes_node_group" "infra_node_group" {
+  cluster_id  = yandex_kubernetes_cluster.yc_cluster.id
+
+  name        = "${var.cluster_name}-infra"
+  version     = var.k8s_version
+  count       = var.infra_nodes_count
+
+  instance_template {
+    platform_id = "standard-v2"
+
+    network_interface {
+      nat                = true
+      subnet_ids         = [var.subnet_id]
+    }
+
+    resources {
+      memory = var.node_memory_size
+      cores  = var.node_cpu_count
+    }
+
+    boot_disk {
+      type = "network-ssd"
+      size = var.node_disk_size
+    }
+
+    scheduling_policy {
+      preemptible = false
+    }
+
+    container_runtime {
+      type = "containerd"
+    }
+  }
+
+  scale_policy {
+    fixed_scale {
+      size = 1
+    }
+  }
+
+  # создана метка для узлов этой группы для управления раскаткой нагрузки
+
+  node_labels = {
+    node-role = "infra"
+  }
+
+  # добавлен taint, запрещающий на нее планирование подов с посторонней нагрузкой
+
+  node_taints = [
+    "node-role=infra:NoSchedule"
+  ]
+ 
+
+}
+```
+---
+
+### **2. При помощи файла `values.yaml` (чарта `Argocd`) сконфигурирована установка   компонентов argoCD исключительно на infra-ноды (добавлены соответствующие `toleration` для обхода `taint`, а также `nodeSelector` и `nodeAffinity`).**
+
+Файл `./kubernetes-gitops/argocd/values.yaml`
+
+```yaml
+global:
+  tolerations:
+  - key: "node-role"
+    operator: "Equal"
+    value: "infra"
+    effect: "NoSchedule"
+  affinity: 
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: node-role
+            operator: In
+            values:
+            - infra
+
+...
+  
+notifications:
+  tolerations:
+  - key: "node-role"
+    operator: "Equal"
+    value: "infra"
+    effect: "NoSchedule"
+  affinity: 
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: node-role
+            operator: In
+            values:
+            - infra
+   
+```
+### **3. Создан манифест `appproject.yaml` для развертывания в Argocd `project` с именем `Otus`.**
+
+Файл `./kubernetes-gitops/appproject.yaml`
+
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: otus
+  namespace: default
+spec:
+  clusterResourceWhitelist:
+  - group: '*'
+    kind: '*'
+  destinations:
+  - namespace: '*'
+    server: '*'
+  sourceRepos:
+  - '*'
+```
+---
+
+### **4. Создан манифест `kubernetes-network.yaml` для развертывания в Argocd тестового приложения `kubernetes-network` описанного в репозитории `https://github.com/Kuber-2024-08OTUS/skyfly535_repo.git`.**
+
+Файл `./kubernetes-gitops/kubernetes-network.yaml`
+
+```yaml
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kubernetes-networks
+spec:
+  destination:
+    namespace: homework
+    server: 'https://kubernetes.default.svc'
+  source:
+    path: kubernetes-networks
+    repoURL: 'https://github.com/Kuber-2024-08OTUS/skyfly535_repo.git'
+    targetRevision: HEAD
+  project: otus
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+```
+
+---
+
+### **5. Создан манифест `kubernetes-templating.yaml` для развертывания в Argocd. тестового приложения `kubernetes-templating.yaml` описанного в репозитории `https://github.com/Kuber-2024-08OTUS/skyfly535_repo.git`**
+
+Файл `./kubernetes-gitops/kubernetes-templating.yaml`
+
+```yaml
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kubernetes-templating
+spec:
+  destination:
+    namespace: homeworkhelm
+    server: 'https://kubernetes.default.svc'
+  source:
+    path: kubernetes-templating/homework-app
+    repoURL: 'https://github.com/Kuber-2024-08OTUS/skyfly535_repo.git'
+    targetRevision: HEAD
+    helm:
+      valueFiles:
+      - values.yaml
+      valuesObject:
+        namespace: homeworkhelm
+        replicaCount: 2
+        imageInit:
+          repository: alpine/curl
+  syncPolicy:
+    automated: 
+      prune: true 
+      selfHeal: true 
+    syncOptions:
+    - CreateNamespace=true
+  project: otus
+```
+---
+
+### **5. написан скрипт `install.sh` для автоматического развертывания требуемой инфраструктуры.**
+
+Файл `./kubernetes-gitops/install.sh`
+
+```bash
+# Установка кластера Kubernetes удовлетваряющего условиям ДЗ в Yandex Cloud
+cd terraform_YC_k8s && terraform apply -auto-approve
+# Регистррация кластер локально
+yc managed-kubernetes cluster get-credentials skyfly535 --external
+# Установка из Helm чарта argocd с требуемыми настройками
+cd ../argocd && helmfile apply && cd ..
+# установк из Helm чарта ingress-nginx для тестовых приложений поднимаемых а argocd
+helm upgrade --install ingress-nginx ingress-nginx \
+  --repo https://kubernetes.github.io/ingress-nginx \
+  --namespace ingress-nginx --create-namespace
+# Установка в Argocd `project` с именем `Otus`
+kubectl apply -f appproject.yaml
+# Установка в Argocd тестового приложения `kubernetes-network`
+kubectl apply -f kubernetes-network.yaml
+# Установка в Argocd тестового приложения `kubernetes-templating`
+kubectl apply -f kubernetes-templating.yaml
+```
+---
+После завершения работы скрипта полезно воспользоваться "выхлопом" установки чарта `Argocd`
+
+```bash
+Release "argocd" does not exist. Installing it now.
+NAME: argocd
+LAST DEPLOYED: Tue Oct 22 17:59:39 2024
+NAMESPACE: default
+STATUS: deployed
+REVISION: 1
+TEST SUITE: None
+NOTES:
+In order to access the server UI you have the following options:
+
+1. kubectl port-forward service/argocd-server -n default 8080:443
+
+    and then open the browser on http://localhost:8080 and accept the certificate
+
+2. enable ingress in the values file `server.ingress.enabled` and either
+      - Add the annotation for ssl passthrough: https://argo-cd.readthedocs.io/en/stable/operator-manual/ingress/#option-1-ssl-passthrough
+      - Set the `configs.params."server.insecure"` in the values file and terminate SSL at your ingress: https://argo-cd.readthedocs.io/en/stable/operator-manual/ingress/#option-2-multiple-ingress-objects-and-hosts
+
+
+After reaching the UI the first time you can login with username: admin and the random password generated during the installation. You can find the password by running:
+
+kubectl -n default get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d
+
+(You should delete the initial secret afterwards as suggested by the Getting Started Guide: https://argo-cd.readthedocs.io/en/stable/getting_started/#4-login-using-the-cli)
+
+Listing releases matching ^argocd$
+argocd	default  	1       	2024-10-22 17:59:39.378831107 +1000 +10	deployed	argo-cd-7.6.12	v2.12.6    
+
+
+UPDATED RELEASES:
+NAME     CHART               VERSION   DURATION
+argocd   argo-helm/argo-cd   7.6.12       1m24s
+
+```
+---
+
+### **6. Произведена проверка развернутой инфраструктуры.**
+
+- **6.1** Вся нагрузка `Argocd` развернута на инфраструктурной ноде, а нагрузка приложений на ноде для рабочей нагрузки. 
+
+```bash
+$ kubectl get nodes -o custom-columns=NAME:.metadata.name,TAINTS:.spec.taints
+NAME                        TAINTS
+cl16v4tv903vlmfhnidt-utel   [map[effect:NoSchedule key:node-role value:infra]]
+cl1u5t8pmkfkr7gn26pi-uhyh   <none>
+
+$ kubectl get pods -o wide
+NAME                                               READY   STATUS    RESTARTS   AGE   IP              NODE                        NOMINATED NODE   READINESS GATES
+argocd-application-controller-0                    1/1     Running   0          72m   10.112.128.4    cl16v4tv903vlmfhnidt-utel   <none>           <none>
+argocd-applicationset-controller-c9697658-gxp4n    1/1     Running   0          72m   10.112.128.7    cl16v4tv903vlmfhnidt-utel   <none>           <none>
+argocd-dex-server-76d5bdcbf4-2bw2z                 1/1     Running   0          72m   10.112.128.10   cl16v4tv903vlmfhnidt-utel   <none>           <none>
+argocd-notifications-controller-79f78d44bc-dchsp   1/1     Running   0          72m   10.112.128.5    cl16v4tv903vlmfhnidt-utel   <none>           <none>
+argocd-redis-5bdf85566c-9zqrs                      1/1     Running   0          72m   10.112.128.6    cl16v4tv903vlmfhnidt-utel   <none>           <none>
+argocd-repo-server-76d6bcf6c7-w45dg                1/1     Running   0          72m   10.112.128.8    cl16v4tv903vlmfhnidt-utel   <none>           <none>
+argocd-server-bc65fdd6c-scmn6                      1/1     Running   0          72m   10.112.128.9    cl16v4tv903vlmfhnidt-utel   <none>           <none>
+
+$ kubectl get pods -n homeworkhelm -o wide
+NAME                                                  READY   STATUS    RESTARTS   AGE     IP              NODE                        NOMINATED NODE   READINESS GATES
+kubernetes-templating-homework-app-5665d68f57-b2nts   1/1     Running   0          8m11s   10.112.129.23   cl1u5t8pmkfkr7gn26pi-uhyh   <none>           <none>
+kubernetes-templating-homework-app-5665d68f57-shmgs   1/1     Running   0          8m11s   10.112.129.24   cl1u5t8pmkfkr7gn26pi-uhyh   <none>           <none>
+kubernetes-templating-redis-master-0                  1/1     Running   0          8m11s   10.112.129.25   cl1u5t8pmkfkr7gn26pi-uhyh   <none>           <none>
+kubernetes-templating-redis-replicas-0                1/1     Running   0          8m11s   10.112.129.26   cl1u5t8pmkfkr7gn26pi-uhyh   <none>           <none>
+kubernetes-templating-redis-replicas-1                1/1     Running   0          7m      10.112.129.27   cl1u5t8pmkfkr7gn26pi-uhyh   <none>           <none>
+kubernetes-templating-redis-replicas-2                1/1     Running   0          6m18s   10.112.129.28   cl1u5t8pmkfkr7gn26pi-uhyh   <none>           <none>
+```
+---
+
+- **6.2** Смотрим через `Argocd` на визуализацию запущенного тестового приложения `kubernetes-network`.
+
+![Alt text](./kubernetes-gitops/image/argo_net.jpg)
+
+Стучимся в приложение
+
+```bash
+$ curl http://homework.otus-skyfly.ru/homepage
+Hello, OTUS! Homework 3!
+$ curl http://homework.otus-skyfly.ru/index.html
+Hello, OTUS! Homework 3!
+```
+---
+
+- **6.3** Смотрим через `Argocd` на визуализацию запущенного тестового приложения `kubernetes-templating`.
+
+![Alt text](./kubernetes-gitops/image/argo_templ.jpg)
+
+Стучимся в приложение
+
+```bash 
+$ curl http://homework.otus-skyfly.ru/homepage
+Hello, OTUS! Homework 6! ConfigMap Text.
+$ curl http://homework.otus-skyfly.ru/index.html
+Hello, OTUS! Homework 6! ConfigMap Text.
+```
+---
+
 # HW9 Сервисы централизованного логирования для Kubernetes.
 
 ## В процессе выполнения ДЗ выполнены следующие мероприятия:
 
-### **1. Проверена работ ранее подготовленного интерфейса командной строки Yandex Cloud**.
+### **1. Проверена работ ранее подготовленного интерфейса командной строки Yandex Cloud.**
 
 
 ```bash

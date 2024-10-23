@@ -20,11 +20,11 @@ service:
 
 ingress:
   enabled: true
-  className: ""
+  className: nginx
   annotations:
     nginx.ingress.kubernetes.io/rewrite-target: /index.html
   hosts:
-    - host: homework.otus
+    - host: homework.otus-skyfly.ru
       paths:
         - path: /index.html
           pathType: Prefix
@@ -33,11 +33,12 @@ ingress:
   tls: []
 
 metricsIngress:
-  enabled: true
+  enabled: false
+  className: nginx
   annotations:
     nginx.ingress.kubernetes.io/rewrite-target: /metrics.html
   hosts:
-    - host: homework.otus
+    - host: metrics.otus-skyfly.ru
       paths:
         - path: /metrics
           pathType: Exact
@@ -87,6 +88,7 @@ redis:
 storageClass:
   enabled: true
   name: my-storage-class
-  provisioner: k8s.io/minikube-hostpath
+  provisioner: disk-csi-driver.mks.ycloud.io
+  #provisioner: k8s.io/minikube-hostpath
   reclaimPolicy: Retain
   volumeBindingMode: Immediate
