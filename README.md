@@ -254,7 +254,7 @@ spec:
 
 ---
 
-### **5. Создан манифест `kubernetes-templating.yaml` для развертывания в Argocd. тестового приложения `kubernetes-templating.yaml` описанного в репозитории `https://github.com/Kuber-2024-08OTUS/skyfly535_repo.git`**
+### **5. Создан манифест `kubernetes-templating.yaml` для развертывания в Argocd. тестового приложения `kubernetes-templating.yaml` описанного в репозитории `https://github.com/Kuber-2024-08OTUS/skyfly535_repo.git`.**
 
 Файл `./kubernetes-gitops/kubernetes-templating.yaml`
 
@@ -290,7 +290,7 @@ spec:
 ```
 ---
 
-### **5. написан скрипт `install.sh` для автоматического развертывания требуемой инфраструктуры.**
+### **5. Написан скрипт `install.sh` для автоматического развертывания требуемой инфраструктуры.**
 
 Файл `./kubernetes-gitops/install.sh`
 
