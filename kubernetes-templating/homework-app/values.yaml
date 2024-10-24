@@ -39,6 +39,10 @@ metricsIngress:
     nginx.ingress.kubernetes.io/rewrite-target: /metrics.html
   hosts:
     - host: metrics.otus-skyfly.ru
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /metrics.html
+  hosts:
+    - host: homework.otus-skyfly.ru
       paths:
         - path: /metrics
           pathType: Exact
@@ -89,6 +93,5 @@ storageClass:
   enabled: true
   name: my-storage-class
   provisioner: disk-csi-driver.mks.ycloud.io
-  #provisioner: k8s.io/minikube-hostpath
   reclaimPolicy: Retain
   volumeBindingMode: Immediate
