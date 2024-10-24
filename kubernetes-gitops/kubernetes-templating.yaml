@@ -1,0 +1,28 @@
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kubernetes-templating
+spec:
+  destination:
+    namespace: homeworkhelm
+    server: 'https://kubernetes.default.svc'
+  source:
+    path: kubernetes-templating/homework-app
+    repoURL: 'https://github.com/Kuber-2024-08OTUS/skyfly535_repo.git'
+    targetRevision: HEAD
+    helm:
+      valueFiles:
+      - values.yaml
+      valuesObject:
+        namespace: homeworkhelm
+        replicaCount: 2
+        imageInit:
+          repository: alpine/curl
+  syncPolicy:
+    automated: 
+      prune: true 
+      selfHeal: true 
+    syncOptions:
+    - CreateNamespace=true
+  project: otus
