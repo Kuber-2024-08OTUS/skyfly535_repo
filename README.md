@@ -27,6 +27,677 @@ skyfly535 kubernetes repository
 
 - [HW10 GitOps и инструменты поставки.](#hw10-gitops-и-инструменты-поставки)
 
+- [HW11 Хранилище секретов для приложения. Vault.](#hw11-хранилище-секретов-для-приложения-vault)
+
+# HW11 Хранилище секретов для приложения. Vault.
+
+## В процессе выполнения ДЗ выполнены следующие мероприятия:
+
+### **1. Написаны манифесты `Terraform` для установки кластера Kubernetes удовлетворяющего условиям ДЗ в `Yandex Cloud`.**
+
+Создан файл `./kubernetes-vault/terraform_YC_k8s/k8s-kltr.tf` со следующим содержимым:
+
+```
+# Создание Kubernetes-кластера
+
+resource "yandex_kubernetes_cluster" "yc_cluster" {
+  name                    = var.cluster_name
+
+  master {
+    zonal {
+      zone      = var.zone
+      subnet_id = var.subnet_id
+    }
+    version               = var.k8s_version
+    public_ip             = true
+  }
+
+  network_id              = var.network_id
+
+  service_account_id      = var.service_account_id
+  node_service_account_id = var.service_account_id
+
+  release_channel         = "RAPID"
+  network_policy_provider = "CALICO"
+}
+
+# Создание групп узлов для рабочих нагрузок
+resource "yandex_kubernetes_node_group" "workload_node_group" {
+  cluster_id  = yandex_kubernetes_cluster.yc_cluster.id
+
+  name        = "${var.cluster_name}-workload"
+  version     = var.k8s_version
+  count       = var.workload_nodes_count
+
+  instance_template {
+    platform_id = "standard-v2"
+
+    network_interface {
+      nat                = true
+      subnet_ids         = [var.subnet_id]
+    }
+
+    resources {
+      memory = var.node_memory_size
+      cores  = var.node_cpu_count
+    }
+
+    boot_disk {
+      type = "network-ssd"
+      size = var.node_disk_size
+    }
+
+    scheduling_policy {
+      preemptible = false
+    }
+
+    container_runtime {
+      type = "containerd"
+    }
+  }
+
+  scale_policy {
+    fixed_scale {
+      size = 1
+    }
+  }
+  
+  # создана метка для узлов этой группы для управления раскаткой нагрузки
+  
+  node_labels = {
+    worknode = "true"
+  }
+  
+}
+```
+---
+
+### **2. При помощи файла `values.yaml` (чарта `Consul`) сконфигурирована установка компонентов `Consul` в одноименный namespase.**
+
+**Установка Consul в namespace `consul` с 3 репликами сервера**
+
+Создан файл чарта `./kubernetes-vault/consul/helmfile.yaml` со следующим содержимым:
+
+```yaml
+---
+repositories:
+- name: hashicorp
+  url: https://helm.releases.hashicorp.com
+
+releases:
+- name: consul
+  namespace: consul
+  chart: hashicorp/consul
+  values: 
+  - values.yaml
+```
+
+
+Создан файл переменных `./kubernetes-vault/consul/values.yaml` со следующим содержимым:
+
+```yaml
+global:
+  name: consul
+  image: "dockerhub.timeweb.cloud/hashicorp/consul"
+  imageK8S: "dockerhub.timeweb.cloud/hashicorp/consul-k8s-control-plane"
+server:
+  replicas: 3
+```
+
+**Consul** — это инструмент с открытым исходным кодом, разработанный компанией HashiCorp, который предоставляет распределенную, высокодоступную систему для обнаружения сервисов, управления конфигурацией и сегментации сети. Он предназначен для упрощения сложностей современных облачных инфраструктур и предлагает следующие ключевые функции:
+
+1. **Обнаружение сервисов**: Consul позволяет сервисам регистрироваться и обнаруживать другие сервисы с помощью DNS или HTTP интерфейсов. Это обеспечивает динамическую регистрацию и обнаружение без необходимости жестко задавать IP-адреса.
+
+2. **Проверка работоспособности**: Он выполняет проверки состояния сервисов, чтобы убедиться в их корректной работе. Если сервис не проходит проверку, Consul может автоматически удалить его из реестра, предотвращая отправку трафика на неисправные сервисы.
+
+3. **Хранилище ключ/значение**: Consul включает распределенное хранилище ключ/значение, которое можно использовать для хранения конфигурационных данных, флагов функций или любых других динамических параметров, необходимых приложениям во время выполнения.
+
+4. **Многодатацентровое развертывание**: Consul разработан для работы в нескольких датацентрах, обеспечивая единое обнаружение сервисов и управление конфигурацией независимо от расположения сервисов.
+
+5. **Сегментация сервисов**: С помощью возможностей сервисной сетки (service mesh), Consul может управлять безопасным взаимодействием между сервисами, предоставляя функции аутентификации и шифрования с использованием mTLS.
+
+В контексте текущего развертывания Kubernetes:
+
+- **Бэкенд высокой доступности для Vault**: Vault — это инструмент для безопасного хранения и доступа к секретам и конфиденциальным данным. При работе Vault в режиме высокой доступности (HA) требуется хранилище, поддерживающее выбор лидера и репликацию данных. Consul служит таким хранилищем, обеспечивая необходимые функции для поддержания высокой доступности Vault и согласованной репликации данных между узлами.
+
+- **Координация сервисов**: Consul помогает координировать различные сервисы внутри вашего кластера Kubernetes. Благодаря обнаружению сервисов и проверкам их состояния, он обеспечивает надежное и эффективное взаимодействие между ними.
+
+- **Динамическая конфигурация**: С помощью своего хранилища ключ/значение, Consul позволяет централизованно управлять конфигурационными данными. Приложения могут получать настройки во время выполнения, что позволяет динамически обновлять конфигурации без перезапуска сервисов.
+
+- **Масштабируемость и надежность**: Распределенная архитектура Consul позволяет ему масштабироваться вместе с вашей инфраструктурой. Его способность работать в нескольких узлах и датацентрах повышает общую надежность и устойчивость вашей системы.
+
+---
+
+### **3. При помощи файла `values.yaml` (чарта `Vault`) сконфигурирована установка компонентов `Vault` в одноименный namespase.**
+
+**Установка Vault в namespace `vault` с использованием Consul в режиме HA**
+
+Создан файл чарта `./kubernetes-vault/vault/helmfile.yaml` со следующим содержимым:
+
+```yaml
+---
+repositories:
+- name: hashicorp
+  url: https://helm.releases.hashicorp.com
+
+releases:
+- name: vault
+  namespace: vault
+  chart: hashicorp/vault
+  values: 
+  - values.yaml
+```
+
+
+Создан файл переменных `./kubernetes-vault/vault/values.yaml` со следующим содержимым:
+
+```yaml
+injector:
+  image:
+    repository: "dockerhub.timeweb.cloud/hashicorp/vault-k8s"
+  agentImage:
+    repository: "dockerhub.timeweb.cloud/hashicorp/vault"
+csi:
+  image:
+    repository: "dockerhub.timeweb.cloud/hashicorp/vault-csi-provider"
+agent:
+  image:
+    repository: "dockerhub.timeweb.cloud/hashicorp/vault"
+server:
+   image:
+     repository: "dockerhub.timeweb.cloud/hashicorp/vault" 
+   ha:
+    enabled: true
+    replicas: 3
+    config: |
+      ui = true
+
+      listener "tcp" {
+        tls_disable = 1
+        address = "[::]:8200"
+      }
+      storage "consul" {
+        path = "vault"
+        address = "consul-server.consul:8500"
+      }
+
+      service_registration "kubernetes" {}
+```
+
+Данный файл `values.yaml` предназначен для настройки установки HashiCorp Vault с помощью Helm-чарта в Kubernetes. В нем определены параметры для различных компонентов Vault, таких как сервер, агент, инжектор и CSI-провайдер. Ниже подробно описан каждый раздел файла:
+
+---
+
+#### **1. Инжектор (injector):**
+
+```yaml
+injector:
+  image:
+    repository: "dockerhub.timeweb.cloud/hashicorp/vault-k8s"
+  agentImage:
+    repository: "dockerhub.timeweb.cloud/hashicorp/vault"
+```
+
+**Описание:**
+
+- **injector.image.repository**: Указывает пользовательский репозиторий Docker-образа для инжектора Vault Kubernetes. В данном случае используется репозиторий `dockerhub.timeweb.cloud/hashicorp/vault-k8s`.
+  
+- **injector.agentImage.repository**: Указывает репозиторий Docker-образа для агента Vault, который используется инжектором. Здесь используется образ `dockerhub.timeweb.cloud/hashicorp/vault`.
+
+**Назначение:**
+
+Инжектор Vault Kubernetes автоматически внедряет секреты из Vault в поды Kubernetes без необходимости изменения исходного кода приложений. Это облегчает управление секретами и повышает безопасность приложений.
+
+---
+
+#### **2. CSI-провайдер (csi):**
+
+```yaml
+csi:
+  image:
+    repository: "dockerhub.timeweb.cloud/hashicorp/vault-csi-provider"
+```
+
+**Описание:**
+
+- **csi.image.repository**: Указывает репозиторий Docker-образа для провайдера Vault CSI. Используется образ `dockerhub.timeweb.cloud/hashicorp/vault-csi-provider`.
+
+**Назначение:**
+
+Vault CSI-провайдер позволяет Kubernetes использовать секреты из Vault в качестве томов через интерфейс Container Storage Interface (CSI). Это дает возможность приложениям монтировать секреты как файлы или тома, обеспечивая более гибкое и безопасное управление конфиденциальными данными.
+
+---
+
+#### **3. Агент (agent):**
+
+```yaml
+agent:
+  image:
+    repository: "dockerhub.timeweb.cloud/hashicorp/vault"
+```
+
+**Описание:**
+
+- **agent.image.repository**: Указывает репозиторий Docker-образа для агента Vault. Образ берется из `dockerhub.timeweb.cloud/hashicorp/vault`.
+
+**Назначение:**
+
+Агент Vault работает в подах и обеспечивает кэширование и обновление секретов, полученных из Vault. Он взаимодействует с инжектором и помогает минимизировать количество запросов к серверу Vault, повышая эффективность и производительность.
+
+---
+
+#### **4. Сервер (server):**
+
+```yaml
+server:
+   image:
+     repository: "dockerhub.timeweb.cloud/hashicorp/vault" 
+   ha:
+    enabled: true
+    replicas: 3
+    config: |
+      ui = true
+
+      listener "tcp" {
+        tls_disable = 1
+        address = "[::]:8200"
+      }
+      storage "consul" {
+        path = "vault"
+        address = "consul-server.consul:8500"
+      }
+
+      service_registration "kubernetes" {}
+```
+
+**Описание:**
+
+- **server.image.repository**: Указывает репозиторий Docker-образа для сервера Vault. Используется образ `dockerhub.timeweb.cloud/hashicorp/vault`.
+
+- **ha.enabled**: Включает режим высокой доступности (High Availability) для Vault. Значение `true` означает, что HA-режим активирован.
+
+- **ha.replicas**: Указывает количество реплик сервера Vault в HA-режиме. Здесь установлено 3 реплики для обеспечения отказоустойчивости и распределения нагрузки.
+
+- **ha.config**: Содержит встроенную конфигурацию сервера Vault. Вот что входит в эту конфигурацию:
+
+  - **ui = true**: Активирует веб-интерфейс Vault, позволяя администраторам управлять секретами через браузер.
+
+  - **listener "tcp" { ... }**: Настраивает сетевой слушатель Vault.
+    - **tls_disable = 1**: Отключает TLS-шифрование. Это означает, что соединения будут нешифрованными. *Важно*: В производственной среде TLS должен быть включен для обеспечения безопасности.
+    - **address = "[::]:8200"**: Указывает, что Vault будет слушать на порту 8200 на всех сетевых интерфейсах (IPv4 и IPv6).
+
+  - **storage "consul" { ... }**: Настраивает Consul в качестве бэкенда хранения для Vault.
+    - **path = "vault"**: Указывает путь в Consul, где Vault будет хранить свои данные.
+    - **address = "consul-server.consul:8500"**: Указывает адрес Consul-сервера. В данном случае это сервис `consul-server` в namespace `consul` на порту 8500.
+
+  - **service_registration "kubernetes" {}**: Включает регистрацию сервиса Vault в Kubernetes. Это позволяет Vault взаимодействовать с Kubernetes API для обнаружения сервисов и упрощения интеграции.
+
+**Назначение:**
+
+Этот раздел настраивает серверную часть Vault для работы в режиме высокой доступности с использованием Consul в качестве хранилища данных. Это обеспечивает надежное и устойчивое к сбоям хранение секретов и состояния кластера Vault.
+
+---
+
+#### **Дополнительные пояснения:**
+
+- **Пользовательские репозитории образов:**
+
+  Все образы Docker берутся из частного реестра `dockerhub.timeweb.cloud/hashicorp/`. Это может быть необходимо для ускорения загрузки образов, соответствия политикам безопасности компании или использования проверенных версий образов.
+
+- **Отключение TLS:**
+
+  В конфигурации слушателя TLS отключен (`tls_disable = 1`). Это упрощает начальную настройку и тестирование, но не рекомендуется для производственной среды из-за рисков безопасности. В реальных условиях следует настроить TLS для шифрования трафика между клиентами и сервером Vault.
+
+- **Использование Consul в качестве бэкенда хранения:**
+
+  Consul предоставляет распределенное, согласованное хранилище, которое Vault использует для хранения данных и координации между репликами в режиме высокой доступности. Это позволяет обеспечить непрерывную работу Vault даже при сбое отдельных узлов.
+
+- **Регистрация сервиса в Kubernetes:**
+
+  Секция `service_registration "kubernetes" {}` позволяет Vault автоматически регистрировать себя в Kubernetes. Это упрощает процессы обслуживания и обновления, а также позволяет другим сервисам в кластере находить Vault через стандартные механизмы Kubernetes.
+
+---
+
+#### **Итоговое назначение файла `values.yaml`:**
+
+- **Устанавливает Vault в режиме высокой доступности с 3 репликами.**
+- **Настраивает использование Consul в качестве бэкенда хранения для обеспечения отказоустойчивости и согласованности данных.**
+- **Конфигурирует инжектор и агент Vault для автоматического внедрения секретов в приложения Kubernetes.**
+- **Включает веб-интерфейс Vault для удобства управления.**
+- **Использует пользовательские образы Docker из частного реестра.**
+
+---
+
+**Этот файл `values.yaml` позволяет развернуть Vault в Kubernetes с оптимальными настройками для разработки и тестирования, обеспечивая при этом основы для перехода в производственную среду с минимальными изменениями.**
+
+---
+### **4. Создан файл  `./skyfly535_repo/kubernetes-vault/external-secrets-operator/helmfile.yaml` для установка компонентов (чарта `external-secrets`) `external-secrets` в namespase `Vault`.**
+
+```yaml
+---
+repositories:
+- name: external-secrets
+  url: https://charts.external-secrets.io
+
+releases:
+- name: external-secrets
+  namespace: vault
+  chart: external-secrets/external-secrets
+```
+
+ `External Secret Operator` — это, по сути, `контроллер Kubernetes`, который управляет секретами, хранящимися за пределами кластера, например, в `HashiCorp Vault` или облачной системе управления секретами, такой как AWS Secrets Manager. Когда модулю требуется доступ к определённому секрету, внешний оператор секретов извлекает его из внешней системы и делает доступным для модуля в качестве секрета Kubernetes.
+
+External Secret Operator работает, создавая три `custom resource definitions (CRDs)`: ClusterSecretStore, SecretStore и ExternalSecret.
+
+CRD ClusterSecretStore используется для определения параметров подключения к внешнему хранилищу секретов, таких как конечная точка, данные аутентификации и другие параметры конфигурации. CRD SecretStore похож на ресурс ClusterSecretStore, но имеет собственное пространство имён. CRD ExternalSecret используется для создания секретов Kubernetes и управления ими на основе конфигурации, заданной в CRD ClusterSecretStore или CRD SecretStore.
+
+External Secret Operator отслеживает изменения в ресурсах ExternalSecret и при необходимости динамически создает секреты Kubernetes, заполняя их полученными секретными данными. Таким образом, секреты остаются в безопасности и могут регулярно обновляться без ущерба для использующих их приложений.
+
+![Alt text](./kubernetes-vault/image/ESO.jpg)
+
+---
+### **5. Создан файл  `./skyfly535_repo/kubernetes-vault/sa.yaml` для создания `serviceAccount` с именем `vault-auth` и `ClusterRoleBinding` для него с ролью `system:auth-delegator` в namespase `Vault`.**
+
+```yaml
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vault-auth
+  namespace: vault
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: vault-auth-system-auth-delegator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+- kind: ServiceAccount
+  namespace: vault
+  name: vault-auth
+```
+
+### **6. Создан файл  `./skyfly535_repo/kubernetes-vault/otus-policy.hcl` для  применитя политики `otus-policy` секретов `/otus/cred` с `capabilities = [“read”, “list”]`.
+
+```
+path "/otus/data/cred" {
+  capabilities = ["read","list"]
+}
+
+path "/otus/metadata/cred" {
+    capabilities = ["read", "list"]
+}
+
+path "auth/token/renew-self" {
+    capabilities = ["update"]
+}
+```
+
+### **7. Создан манифест  `./skyfly535_repo/kubernetes-vault/secretStore.yaml` в namespace `vault`, сконфигурированный для доступа к `KV секретам Vault` с использованием ранее созданной роли `otus` и сервис аккаунта `vault-auth`.
+
+```yaml
+---
+apiVersion: external-secrets.io/v1beta1
+kind: SecretStore
+metadata:
+  name: otus
+  namespace: vault
+spec:
+  provider:
+    vault:
+      server: "http://vault.vault:8200"
+      namespace: "vault"
+      path: "otus"
+      version: "v2"
+      auth:
+        kubernetes:
+          mountPath: "kubernetes"
+          role: "otus"
+          serviceAccountRef:
+            name: "vault-auth"
+```
+
+### **8. Создан манифест  `./skyfly535_repo/kubernetes-vault/externalSecret.yaml` удовлетваряющий параметрам ДЗ.
+
+● ns – vaultж;
+
+● SecretStore – созданный на прошлом шаге;
+
+● Target.name = otus-cred;
+
+● Получает значения KV секрета /otus/cred из vault и
+отображает их в два ключа – username и password
+соответственно.
+
+```yaml
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: otus
+  namespace: vault
+spec:
+  refreshInterval: 1h           
+  secretStoreRef:
+    kind: SecretStore
+    name: otus   
+  target:
+    name: otus-cred 
+    creationPolicy: Owner
+  dataFrom:
+  - extract:
+      key: cred
+```
+
+### **9. Написан скрипт `install.sh` для автоматического развертывания требуемой инфраструктуры.**
+
+```bash
+# Установка кластера Kubernetes удовлетворяющего условиям ДЗ в Yandex Cloud
+cd terraform_YC_k8s && terraform apply -auto-approve
+# Регистрация кластер локально
+yc managed-kubernetes cluster get-credentials skyfly535 --external
+# Установка из Helm чарта consul с требуемыми настройками
+cd ../consul && helmfile apply . && cd ..
+# Установка из Helm чарта vault с требуемыми настройками
+cd vault && helmfile apply . && cd ..
+#Ожидание (проверка) запуска Pod'ов Vault
+while [[ "$(kubectl get pod -n vault  | grep -E 'vault-[0-9]' | grep  Running | wc -l)"  -lt "3" ]]; do echo 'waiting for all pod is running'; sleep 1 ;done
+# Инициализация Vault (инициализирует Vault с тремя ключами и порогом в три для разблокировки (unseal))
+kubectl -n vault exec -it vault-0 -- vault operator init \
+          -key-shares=3 \
+          -key-threshold=3 
+# Расшифровка (Unseal) всех экземпляров Vault (потребуется вручную вводить unseal-ключи, которые были сгенерированы на этапе инициализации)
+for i in 0 1 2; do
+  for j in 1 2 3; do
+    echo "Enter key number $j"
+    kubectl -n vault exec -it  vault-$i -- vault operator unseal 
+  done
+done
+# Настройка порт-форвардинга для доступа к Vault
+kubectl -n vault  port-forward svc/vault 8200:8200 >/dev/null 2>&1 &
+# Установка переменных окружения для доступа к Vault
+echo "Enter Token"
+read token
+export VAULT_TOKEN=$token
+export VAULT_ADDR=http://127.0.0.1:8200
+# Настройка секретного хранилища и создание секретов в Vault
+vault secrets enable -path otus/ kv-v2
+vault kv put otus/cred 'username=otus'
+vault kv patch otus/cred 'password=asajkjkahs'
+# Создается ServiceAccount vault-auth в namespace vault (этот ServiceAccount будет использоваться для аутентификации Pod'ов в Kubernetes при обращении к Vault)
+kubectl apply -f sa.yaml
+# Настройка аутентификации Vault через Kubernetes
+# Включает метод аутентификации Kubernetes в Vault
+vault auth enable kubernetes
+# Настраивает подключение к Kubernetes API из Vault
+vault write auth/kubernetes/config \
+    kubernetes_host=https://kubernetes.default.svc
+# Создание политики vault с именем otus-policy     
+vault policy write otus-policy otus-policy.hcl
+# Создание роли otus для аутентификации через Kubernetes, связывая ее с ServiceAccount vault-auth в namespace vault и назначая политики default и otus-policy
+vault write auth/kubernetes/role/otus \
+      bound_service_account_names=vault-auth \
+      bound_service_account_namespaces=vault \
+      policies=default,otus-policy \
+      ttl=24h
+# Установка External Secrets Operator с помощью Helm (позволяет синхронизировать секреты из внешних систем (таких как Vault) в Kubernetes Secrets)
+helmfile apply -f external-secrets-operator/
+#  Ожидание готовности Pod'ов в namespace vault
+kubectl wait pod \
+  --all \
+  --for=condition=Ready \
+  --namespace=vault
+# Применение конфигураций для SecretStore и ExternalSecret
+kubectl apply -f secretStore.yaml
+kubectl apply -f externalSecret.yaml
+```
+
+### **10. Произведена проверка развернутой инфраструктуры.**
+
+**10.1** Получаем список ExternalSecret:
+
+  ```bash
+  kubectl get externalsecret -n vault
+  NAME   STORE   REFRESH INTERVAL   STATUS         READY
+  otus   otus    1h                 SecretSynced   True
+  ```
+
+**10.2** Смотрим подробности о ExternalSecret `otus`:
+
+  ```bash
+  kubectl describe externalsecret otus -n vault
+  Name:         otus
+  Namespace:    vault
+  Labels:       <none>
+  Annotations:  <none>
+  API Version:  external-secrets.io/v1beta1
+  Kind:         ExternalSecret
+  Metadata:
+    Creation Timestamp:  2024-11-06T10:11:21Z
+    Generation:          1
+    Resource Version:    42565
+    UID:                 891bb4d9-b49c-4111-a215-cc7d33c24d06
+  Spec:
+    Data From:
+      Extract:
+        Conversion Strategy:  Default
+        Decoding Strategy:    None
+        Key:                  cred
+        Metadata Policy:      None
+    Refresh Interval:         1h
+    Secret Store Ref:
+      Kind:  SecretStore
+      Name:  otus
+    Target:
+      Creation Policy:  Owner
+      Deletion Policy:  Retain
+      Name:             otus-cred
+  Status:
+    Binding:
+      Name:  otus-cred
+    Conditions:
+      Last Transition Time:   2024-11-06T10:11:22Z
+      Message:                Secret was synced
+      Reason:                 SecretSynced
+      Status:                 True
+      Type:                   Ready
+    Refresh Time:             2024-11-06T12:11:22Z
+    Synced Resource Version:  1-71fd60287f5d3c8404ee31701921fc75
+  Events:                     <none>
+  ```
+
+**10.3** Получаем YAML-спецификацию ExternalSecret `otus`:
+
+  ```bash
+  kubectl get externalsecret otus -n vault -o yaml
+  apiVersion: external-secrets.io/v1beta1
+  kind: ExternalSecret
+  metadata:
+    annotations:
+      kubectl.kubernetes.io/last-applied-configuration: |
+        {"apiVersion":"external-secrets.io/v1beta1","kind":"ExternalSecret","metadata":{"annotations":{},"name":"otus","namespace":"vault"},"spec":{"dataFrom":[{"extract":{"key":"cred"}}],"refreshInterval":"1h","secretStoreRef":{"kind":"SecretStore","name":"otus"},"target":{"creationPolicy":"Owner","name":"otus-cred"}}}
+    creationTimestamp: "2024-11-06T10:11:21Z"
+    generation: 1
+    name: otus
+    namespace: vault
+    resourceVersion: "42565"
+    uid: 891bb4d9-b49c-4111-a215-cc7d33c24d06
+  spec:
+    dataFrom:
+    - extract:
+        conversionStrategy: Default
+        decodingStrategy: None
+        key: cred
+        metadataPolicy: None
+    refreshInterval: 1h
+    secretStoreRef:
+      kind: SecretStore
+      name: otus
+    target:
+      creationPolicy: Owner
+      deletionPolicy: Retain
+      name: otus-cred
+  status:
+    binding:
+      name: otus-cred
+    conditions:
+    - lastTransitionTime: "2024-11-06T10:11:22Z"
+      message: Secret was synced
+      reason: SecretSynced
+      status: "True"
+      type: Ready
+    refreshTime: "2024-11-06T12:11:22Z"
+    syncedResourceVersion: 1-71fd60287f5d3c8404ee31701921fc75
+  ```
+
+**10.4** Проверяем статус синхронизации:
+
+  ```bash
+  kubectl get externalsecret otus -n vault -o jsonpath="{.status.conditions}"
+  [{"lastTransitionTime":"2024-11-06T10:11:22Z","message":"Secret was synced","reason":"SecretSynced","status":"True","type":"Ready"}]
+  ```
+
+**10.5** Смотрим созданный Secret `otus-cred`:
+
+  ```bash
+  kubectl describe secret otus-cred -n vault
+  Name:         otus-cred
+  Namespace:    vault
+  Labels:       reconcile.external-secrets.io/created-by=8217762423a09404adc9755e1c595e56
+  Annotations:  reconcile.external-secrets.io/data-hash: f445955da15f3ae1278448facb7667cf
+
+  Type:  Opaque
+
+  Data
+  ====
+  password:  10 bytes
+  username:  4 bytes
+  ```
+
+**10.6** Декодируем значения Secret (если необходимо):
+
+  ```bash
+  kubectl get secret otus-cred -n vault -o jsonpath="{.data.username}" | base64 --decode
+  otus
+  kubectl get secret otus-cred -n vault -o jsonpath="{.data.password}" | base64 --decode
+  asajkjkahs
+  ```
+
+---
+
+![Alt text](./kubernetes-vault/image/vault1.jpg)
+
+Хранилище секретов otus/ с Secret Engine KV и секретом otus/cred
+
+![Alt text](./kubernetes-vault/image/vault2.jpg)
+
+Метод аутентификации Kubernetes
+
+---
+
 # HW10 GitOps и инструменты поставки.
 
 ## В процессе выполнения ДЗ выполнены следующие мероприятия:
