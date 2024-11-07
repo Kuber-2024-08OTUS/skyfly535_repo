@@ -421,7 +421,7 @@ subjects:
   name: vault-auth
 ```
 
-### **6. Создан файл  `./skyfly535_repo/kubernetes-vault/otus-policy.hcl` для  применитя политики `otus-policy` секретов `/otus/cred` с `capabilities = [“read”, “list”]`.
+### **6. Создан файл  `./skyfly535_repo/kubernetes-vault/otus-policy.hcl` для  применитя политики `otus-policy` секретов `/otus/cred` с `capabilities = [“read”, “list”]`.**
 
 ```
 path "/otus/data/cred" {
@@ -437,7 +437,7 @@ path "auth/token/renew-self" {
 }
 ```
 
-### **7. Создан манифест  `./skyfly535_repo/kubernetes-vault/secretStore.yaml` в namespace `vault`, сконфигурированный для доступа к `KV секретам Vault` с использованием ранее созданной роли `otus` и сервис аккаунта `vault-auth`.
+### **7. Создан манифест  `./skyfly535_repo/kubernetes-vault/secretStore.yaml` в namespace `vault`, сконфигурированный для доступа к `KV секретам Vault` с использованием ранее созданной роли `otus` и сервис аккаунта `vault-auth`.**
 
 ```yaml
 ---
@@ -461,7 +461,7 @@ spec:
             name: "vault-auth"
 ```
 
-### **8. Создан манифест  `./skyfly535_repo/kubernetes-vault/externalSecret.yaml` удовлетваряющий параметрам ДЗ.
+### **8. Создан манифест  `./skyfly535_repo/kubernetes-vault/externalSecret.yaml` удовлетваряющий параметрам ДЗ.**
 
 ● ns – vaultж;
 
