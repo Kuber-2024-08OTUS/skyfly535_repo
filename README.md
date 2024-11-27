@@ -29,6 +29,345 @@ skyfly535 kubernetes repository
 
 - [HW11 Хранилище секретов для приложения. Vault.](#hw11-хранилище-секретов-для-приложения-vault)
 
+- [HW12 Установка и использование CSI драйвера.](#hw12-установка-и-использование-csi-драйвера)
+
+# HW12 Установка и использование CSI драйвера.
+
+## В процессе выполнения ДЗ выполнены следующие мероприятия:
+
+### **1. Написаны манифесты Terraform для установки кластера Kubernetes и всей необходимой инфраструктуры удовлетворяющей условиям ДЗ в Yandex Cloud.**
+
+Развернута следующая инфраструктура:
+
+1. **Развернут `Kubernetes-кластер` в Yandex Cloud**
+
+2. **Создан бакет в `Object Storage` Yandex Cloud**
+
+3. **Создан `ServiceAccount` и сгенерирован `ключи доступа`**
+
+4. **Создн `Secret` с ключами для доступа к Object Storage**
+
+Файл `./kubernetes-csi/terraform_YC_k8s/k8s-kltr.tf`
+
+```hcl
+# Создание сервисного аккаунта 
+resource "yandex_iam_service_account" "otus_sa" {
+  name = var.service_account_name
+}
+# Назначение IAM ролей
+resource "yandex_resourcemanager_folder_iam_member" "otus_sa_roles" {
+  for_each = toset([
+    "editor",
+    "storage.admin",
+    "container-registry.images.puller",
+    "container-registry.images.pusher"
+  ])
+
+  role      = each.value
+  folder_id = var.folder_id
+  member    = "serviceAccount:${yandex_iam_service_account.otus_sa.id}"
+  depends_on = [yandex_iam_service_account.otus_sa]
+}
+
+
+# Создание Kubernetes-кластера
+resource "yandex_kubernetes_cluster" "yc_cluster" {
+  name                    = var.cluster_name
+
+  master {
+    zonal {
+      zone      = var.zone
+      subnet_id = var.subnet_id
+    }
+    version               = var.k8s_version
+    public_ip             = true
+  }
+
+  network_id              = var.network_id
+
+  service_account_id      = var.service_account_id
+  node_service_account_id = var.service_account_id
+
+  release_channel         = "RAPID"
+  network_policy_provider = "CALICO"
+
+  timeouts {
+    create = "30m"
+    update = "30m"
+  }
+
+  depends_on = [yandex_iam_service_account.otus_sa]
+}
+
+# Создание групп узлов для рабочих нагрузок
+resource "yandex_kubernetes_node_group" "workload_node_group" {
+  cluster_id  = yandex_kubernetes_cluster.yc_cluster.id
+
+  name        = "${var.cluster_name}-workload"
+  version     = var.k8s_version
+  count       = var.workload_nodes_count
+
+  instance_template {
+    platform_id = "standard-v2"
+
+    network_interface {
+      nat                = true
+      subnet_ids         = [var.subnet_id]
+    }
+
+    resources {
+      memory = var.node_memory_size
+      cores  = var.node_cpu_count
+    }
+
+    boot_disk {
+      type = "network-ssd"
+      size = var.node_disk_size
+    }
+
+    scheduling_policy {
+      preemptible = false
+    }
+
+    # container_runtime {
+    #   type = "containerd"
+    # }
+  }
+
+  scale_policy {
+    fixed_scale {
+      size = 1
+    }
+  }
+  depends_on = [yandex_kubernetes_cluster.yc_cluster]
+  # Создание метки для узлов этой группы для управления раскаткой нагрузки
+  
+  node_labels = {
+    worknode = "true"
+  }
+
+}
+# Генерация случайного суффикса для имени S3-бакета
+resource "random_id" "bucket_suffix" {
+  byte_length = 4
+}
+# Создание S3-бакета для хранения 
+resource "yandex_storage_bucket" "volume1" {
+  access_key = yandex_iam_service_account_static_access_key.s3.access_key
+  secret_key = yandex_iam_service_account_static_access_key.s3.secret_key
+  bucket        = "volume-${random_id.bucket_suffix.hex}"
+  force_destroy = true
+  depends_on = [yandex_iam_service_account.otus_sa]
+}
+# Создание статического ключа доступа для S3
+resource "yandex_iam_service_account_static_access_key" "s3" {
+  service_account_id = yandex_iam_service_account.otus_sa.id
+  description        = "S3 access key"
+  depends_on = [yandex_iam_service_account.otus_sa]
+}
+# создания секретов
+resource "kubernetes_secret" "csi_s3_secret" {
+  metadata {
+    name      = "csi-s3-secret"
+    namespace = "kube-system"
+  }
+
+  data = {
+    accessKeyID     = yandex_iam_service_account_static_access_key.s3.access_key
+    secretAccessKey = yandex_iam_service_account_static_access_key.s3.secret_key
+    endpoint        = "https://storage.yandexcloud.net"
+    
+  }
+  depends_on = [yandex_iam_service_account_static_access_key.s3]
+}
+# Выходные переменные для отображения cluster_endpoint и cluster_ca_certificate кластера Kubernetes.
+output "cluster_endpoint" {
+  value = yandex_kubernetes_cluster.yc_cluster.master.0.external_v4_endpoint
+}
+
+output "cluster_ca_certificate" {
+  value = yandex_kubernetes_cluster.yc_cluster.master.0.cluster_ca_certificate
+}
+```
+---
+
+### **2. Создан манифест `./kubernetes-csi/manifest/storageClass.yaml` со следующим содержимым:**
+
+```yaml
+kind: StorageClass
+apiVersion: storage.k8s.io/v1
+metadata:
+  name: homework-csi
+provisioner: ru.yandex.s3.csi
+parameters:
+  mounter: geesefs
+  options: "--memory-limit 1000 --dir-mode 0777 --file-mode 0666"
+  bucket: volume1
+  csi.storage.k8s.io/provisioner-secret-name: csi-s3-secret
+  csi.storage.k8s.io/provisioner-secret-namespace: kube-system
+  csi.storage.k8s.io/controller-publish-secret-name: csi-s3-secret
+  csi.storage.k8s.io/controller-publish-secret-namespace: kube-system
+  csi.storage.k8s.io/node-stage-secret-name: csi-s3-secret
+  csi.storage.k8s.io/node-stage-secret-namespace: kube-system
+  csi.storage.k8s.io/node-publish-secret-name: csi-s3-secret
+  csi.storage.k8s.io/node-publish-secret-namespace: kube-system
+```
+#### Описание манифеста StorageClass
+
+Этот манифест создаёт **StorageClass** для динамического управления хранилищем в Kubernetes, используя провайдер **Yandex Cloud S3** через **CSI (Container Storage Interface)**.
+
+---
+
+#### **Ключевые части манифеста**
+
+1. **kind: StorageClass**
+   - Тип ресурса Kubernetes, который определяет класс хранилища. Используется для создания PersistentVolume (PV) с динамическим выделением.
+
+2. **apiVersion: storage.k8s.io/v1**
+   - Версия API для работы с объектом StorageClass.
+
+3. **metadata**
+   - **name: homework-csi**: Имя StorageClass, которое будет использоваться для ссылки на этот класс при создании PersistentVolumeClaim (PVC).
+
+4. **provisioner**
+   - **provisioner: ru.yandex.s3.csi**: Указывает на CSI-драйвер для работы с S3-хранилищем в Yandex Cloud. Этот драйвер отвечает за создание, настройку и удаление томов.
+
+5. **parameters**
+   - Содержит параметры конфигурации для S3-хранилища:
+     - **mounter: geesefs**: Указывает, что для монтирования S3-хранилища будет использоваться утилита **geesefs**.
+     - **options: "--memory-limit 1000 --dir-mode 0777 --file-mode 0666"**:
+       - `--memory-limit 1000`: Устанавливает лимит памяти для монтирования.
+       - `--dir-mode 0777`: Задаёт режим доступа к директориям.
+       - `--file-mode 0666`: Задаёт режим доступа к файлам.
+     - **bucket: volume1**: Имя S3-бакета в Yandex Cloud, который будет использоваться для хранения данных.
+     - **csi.storage.k8s.io/...-secret-name**: Указывает имя секрета Kubernetes для аутентификации драйвера:
+       - **csi.storage.k8s.io/provisioner-secret-name**: Для динамического выделения томов.
+       - **csi.storage.k8s.io/controller-publish-secret-name**: Для управления доступом к томам.
+       - **csi.storage.k8s.io/node-stage-secret-name**: Для подготовки узлов.
+       - **csi.storage.k8s.io/node-publish-secret-name**: Для монтирования томов.
+     - **csi.storage.k8s.io/...-secret-namespace**: Все секреты расположены в пространстве имён `kube-system`.
+
+#### **Как это работает**
+
+1. **CSI-драйвер S3** взаимодействует с Yandex Cloud для управления бакетами.
+2. При создании PVC драйвер использует указанный бакет `volume1` для хранения данных.
+3. Секреты (`csi-s3-secret`) содержат учетные данные для доступа к S3.
+4. Параметры монтирования (`mounter` и `options`) определяют, как S3-том будет подключен к узлам Kubernetes.
+
+---
+
+#### **Преимущества**
+
+- **Гибкость**: Легко управлять хранилищем через Kubernetes, не требуя ручной настройки бакетов.
+- **Интеграция**: Использование секрета упрощает управление доступом к хранилищу.
+- **Совместимость**: Использование CSI-драйвера делает этот подход совместимым с другими системами Kubernetes.
+
+### **3. Создан манифест `./kubernetes-csi/manifest/pvc.yaml` со следующим содержимым:**
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: homework-csi
+spec:
+  storageClassName: homework-csi
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+```
+В манифесте PersistentVolumeClaim указана ссылка на созданный StorageClass.
+
+
+### **4. Создан манифест `./kubernetes-csi/manifest/s3-test-pod.yaml` со следующим содержимым:**
+
+Создать Pod, использующий созданный PVC.
+
+Создайте файл `s3-test-pod.yaml` со следующим содержимым:
+
+```yaml
+aapiVersion: v1
+kind: Pod
+metadata:
+  name: s3-test-pod
+spec:
+  containers:
+    - name: app
+      image: busybox
+      command: ["/bin/sh", "-c", "while true; do echo $(date) >> /mnt/data/log.txt; sleep 5; done"]
+      volumeMounts:
+        - name: s3-volume
+          mountPath: /mnt/data
+  volumes:
+    - name: s3-volume
+      persistentVolumeClaim:
+        claimName: homework-csi
+```
+
+Созданый Pod, использует созданный PVC.
+
+### **5. Написан скрипт `install.sh` для автоматического развертывания требуемой инфраструктуры.**
+
+```bash
+# Переход в каталог с конфигурации Terraform для развертывания необходимой инфраструктуры
+cd terraform_YC_k8s
+# Инициализация Terraform и обновление версии провайдеров и модулей до последних доступных
+terraform init -upgrade
+# Установка кластера Kubernetes удовлетворяющего условиям ДЗ в Yandex Cloud (без запроса дополнительного ввода от пользователя)
+terraform apply -input=false  -compact-warnings -auto-approve
+# Получение учетных данных Kubernetes-кластера, регистрация кластер локально
+yc k8s cluster get-credentials --id $(yc k8s cluster list  | grep 'RUNNING' | awk -F '|' '{print $2}')  --external --force
+# Добавляение репозитория Helm charts для CSI-драйвера Yandex S3 с указанным URL
+helm repo add yandex-s3 https://yandex-cloud.github.io/k8s-csi-s3/charts
+# Установка CSI-драйвер Yandex S3 в Kubernetes-кластер, используя Helm. Релиз называется csi-s3.
+helm install csi-s3 yandex-s3/csi-s3
+# Применение манифеста storageClass.yaml, который определяет StorageClass для динамического создания PersistentVolume на основе Yandex S3
+cd .. && kubectl apply -f manifest/storageClass.yaml
+# Применение манифеста pvc.yaml, который создает PersistentVolumeClaim, запрашивая хранилище согласно ранее созданному StorageClass
+kubectl apply -f  manifest/pvc.yaml
+# Применение манифеста s3-test-pod.yaml, который будет использовать примонтированный том из Yandex S3
+kubectl apply -f  manifest/s3-test-pod.yaml
+```
+---
+
+### **6. Произведена проверка развернутой инфраструктуры.**
+
+**6.1** Проверяем состояние развернутого `S3` хранилища:
+
+```bash
+yc storage bucket list
++-----------------+----------------------+----------+-----------------------+---------------------+
+|      NAME       |      FOLDER ID       | MAX SIZE | DEFAULT STORAGE CLASS |     CREATED AT      |
++-----------------+----------------------+----------+-----------------------+---------------------+
+| volume-7f41354b | b1ghhcttrug793gc11tt |        0 | STANDARD              | 2024-11-25 21:30:13 |
+| volume1         | b1ghhcttrug793gc11tt |        0 | STANDARD              | 2024-11-25 21:41:43 |
++-----------------+----------------------+----------+-----------------------+---------------------+
+```
+**6.2** Проверяем состояние развернутого `PVC` :
+
+```bash
+kubectl get pvc
+NAME           STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   AGE
+homework-csi   Bound    pvc-b559e478-ee81-4a05-ac2d-aa39a2262042   2Gi        RWO            homework-csi   17m
+```
+
+**6.3** Скачиваем файл `log.txt` из `S3` хранилища через UI YC, проверяем содержимое:
+
+```
+Mon Nov 25 21:42:04 UTC 2024
+Mon Nov 25 21:42:09 UTC 2024
+Mon Nov 25 21:42:14 UTC 2024
+Mon Nov 25 21:42:19 UTC 2024
+
+...
+
+Mon Nov 25 21:54:05 UTC 2024
+Mon Nov 25 21:54:10 UTC 2024
+```
+Видим, что каждые 5 секунд в файл /mnt/data/log.txt добавляется текущая дата и время.
+
+
 # HW11 Хранилище секретов для приложения. Vault.
 
 ## В процессе выполнения ДЗ выполнены следующие мероприятия:
