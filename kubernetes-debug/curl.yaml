@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "curl"
+  namespace: default
+spec:
+  containers:
+  - name: curl
+    image: curlimages/curl
+    command: ["/bin/sh"]
+    args: ["-c","while true; do curl http://nginx/; sleep 3; done"]
+    resources:
+      limits:
+        cpu: 100m
+        memory: 500Mi
+      requests:
+        cpu: 100m
+        memory: 200Mi
+  restartPolicy: Always
