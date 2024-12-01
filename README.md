@@ -31,6 +31,288 @@ skyfly535 kubernetes repository
 
 - [HW12 Установка и использование CSI драйвера.](#hw12-установка-и-использование-csi-драйвера)
 
+- [HW13 Диагностика и отладка в Kubernetes.](#hw13-диагностика-и-отладка-в-kubernetes)
+
+# HW13 Диагностика и отладка в Kubernetes.
+
+## В процессе выполнения ДЗ выполнены следующие мероприятия:
+
+### **1. Запущен кластер minikube на хостовой машине.**
+
+```bash
+minikube start --kubernetes-version=v1.31.0 --driver=virtualbox
+😄  minikube v1.34.0 на Ubuntu 20.04
+✨  Используется драйвер virtualbox на основе конфига пользователя
+👍  Starting "minikube" primary control-plane node in "minikube" cluster
+🔥  Creating virtualbox VM (CPUs=2, Memory=2200MB, Disk=20000MB) ...
+🐳  Подготавливается Kubernetes v1.31.0 на Docker 27.2.0 ...
+    ▪ Generating certificates and keys ...
+    ▪ Booting up control plane ...
+    ▪ Configuring RBAC rules ...
+🔗  Configuring bridge CNI (Container Networking Interface) ...
+🔎  Компоненты Kubernetes проверяются ...
+    ▪ Используется образ gcr.io/k8s-minikube/storage-provisioner:v5
+🌟  Включенные дополнения: storage-provisioner, default-storageclass
+
+❗  /usr/local/bin/kubectl is version 1.29.1, which may have incompatibilities with Kubernetes 1.31.0.
+    ▪ Want kubectl v1.31.0? Try 'minikube kubectl -- get pods -A'
+🏄  Готово! kubectl настроен для использования кластера "minikube" и "default" пространства имён по умолчанию
+```
+---
+
+### **2. Создан манифест `./kubernetes-debug/nginx.yaml`, описывающий pod с `kyos0109/nginx-distroless` образом для создания необходимого контейнера.**
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "nginx-distroless"
+  namespace: default
+  labels:
+    app.kubernetes.io/name: nginx
+spec:
+  containers:
+  - name: nginx-distroless 
+    image: kyos0109/nginx-distroless
+    resources:
+      limits:
+        cpu: 100m
+        memory: 500Mi
+      requests:
+        cpu: 100m
+        memory: 200Mi
+    ports:
+    - containerPort: 80
+      name: http
+    securityContext:
+      privileged: true
+      capabilities:
+        add: ["SYS_PTRACE", "SYS_ADMIN"]
+      allowPrivilegeEscalation: true
+      seccompProfile:
+        type: Unconfined
+  restartPolicy: Always
+```
+
+Так же создан манифест `./kubernetes-debug/service_nginx.yaml` для обеспечения сетевого взаимодействия тестовго Pod
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx
+spec:
+  selector:
+    app.kubernetes.io/name: nginx
+  ports:
+  - name: web
+    protocol: TCP
+    port: 80
+    targetPort: 80
+```
+
+и манифест `./kubernetes-debug/curl.yaml` для генерации нагрузки 
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "curl"
+  namespace: default
+spec:
+  containers:
+  - name: curl
+    image: curlimages/curl
+    command: ["/bin/sh"]
+    args: ["-c","while true; do curl http://nginx/; sleep 3; done"]
+    resources:
+      limits:
+        cpu: 100m
+        memory: 500Mi
+      requests:
+        cpu: 100m
+        memory: 200Mi
+  restartPolicy: Always
+```
+---
+
+### **3. Запущенна описанная инфраструктура.**
+
+```bash
+kubectl apply -f nginx.yaml 
+pod/nginx-distroless created
+
+kubectl apply -f service_nginx.yaml 
+service/nginx created
+
+kubectl apply -f curl.yaml 
+pod/curl created
+
+kubectl get pod
+NAME               READY   STATUS              RESTARTS   AGE
+curl               0/1     ContainerCreating   0          9s
+nginx-distroless   1/1     Running             0          23s
+
+kubectl get pod
+NAME               READY   STATUS    RESTARTS   AGE
+curl               1/1     Running   0          26s
+nginx-distroless   1/1     Running   0          40s
+```
+
+----
+
+### **4. С помощью команды kubectl debug создайте эфемерный контейнер для отладки пода.**
+
+```bash 
+kubectl debug -it nginx-distroless --image=ubuntu --target=nginx-distroless
+Targeting container "nginx-distroless". If you don't see processes from this container it may be because the container runtime doesn't support this feature.
+Defaulting debug container name to debugger-w6chs.
+If you don't see a command prompt, try pressing enter.
+
+root@nginx-distroless:/# 
+```
+---
+
+### **5. В дебаг контейнере установленны необходимые пакеты и запущенна команда tcpdump**
+
+```bash
+apt update
+apt install -y tcpdump strace
+```
+
+```bash
+root@nginx-distroless:/# tcpdump -nn -i any -e port 80
+tcpdump: data link type LINUX_SLL2
+tcpdump: verbose output suppressed, use -v[v]... for full protocol decode
+listening on any, link-type LINUX_SLL2 (Linux cooked v2), snapshot length 262144 bytes
+06:13:05.759841 eth0  In  ifindex 3 b6:19:c7:a3:ec:41 ethertype IPv4 (0x0800), length 80: 10.244.0.4.36136 > 10.244.0.3.80: Flags [S], seq 3730945754, win 64240, options [mss 1460,sackOK,TS val 29322771 ecr 0,nop,wscale 7], length 0
+06:13:05.759884 eth0  Out ifindex 3 26:3c:91:e9:25:51 ethertype IPv4 (0x0800), length 80: 10.244.0.3.80 > 10.244.0.4.36136: Flags [S.], seq 1287817036, ack 3730945755, win 65160, options [mss 1460,sackOK,TS val 1861122678 ecr 29322771,nop,wscale 7], length 0
+06:13:05.759975 eth0  In  ifindex 3 b6:19:c7:a3:ec:41 ethertype IPv4 (0x0800), length 72: 10.244.0.4.36136 > 10.244.0.3.80: Flags [.], ack 1, win 502, options [nop,nop,TS val 29322771 ecr 1861122678], length 0
+06:13:05.760288 eth0  In  ifindex 3 b6:19:c7:a3:ec:41 ethertype IPv4 (0x0800), length 
+
+...
+
+06:13:08.863029 eth0  In  ifindex 3 b6:19:c7:a3:ec:41 ethertype IPv4 (0x0800), length 72: 10.244.0.4.36154 > 10.244.0.3.80: Flags [F.], seq 70, ack 851, win 501, options [nop,nop,TS val 29325874 ecr 1861125781], length 0
+06:13:08.863077 eth0  Out ifindex 3 26:3c:91:e9:25:51 ethertype IPv4 (0x0800), length 72: 10.244.0.3.80 > 10.244.0.4.36154: Flags [F.], seq 851, ack 71, win 509, options [nop,nop,TS val 1861125781 ecr 29325874], length 0
+06:13:08.863102 eth0  In  ifindex 3 b6:19:c7:a3:ec:41 ethertype IPv4 (0x0800), length 72: 10.244.0.4.36154 > 10.244.0.3.80: Flags [.], ack 852, win 501, options [nop,nop,TS val 29325874 ecr 1861125781], length 0
+^C
+24 packets captured
+24 packets received by filter
+0 packets dropped by kernel
+```
+---
+
+### **6. С помощью `kubectl debug` создан отладочный под для ноды, на которой запущен под с distroless nginx и получен доступ к файловой системе ноды, и затем доступ к логам пода с distrolles nginx.**
+
+```bash
+kubectl debug node/minikube -it --image=ubuntu
+Creating debugging pod node-debugger-minikube-m2hps with container debugger on node minikube.
+If you don't see a command prompt, try pressing enter.
+root@minikube:/# 
+```
+
+```bash
+root@minikube:/# cat /host/var/lib/docker/containers/af9027e69d5f8d7111a4d46c82fad31e58f5fec93cb533e27f6e1888a46a7a88/af9027e69d5f8d7111a4d46c82fad31e58f5fec93cb533e27f6e1888a46a7a88-json.log
+{"log":"10.244.0.4 - - [01/Dec/2024:13:41:34 +0800] \"GET / HTTP/1.1\" 200 612 \"-\" \"curl/8.11.0\" \"-\"\n","stream":"stdout","time":"2024-12-01T05:41:34.051891896Z"}
+{"log":"10.244.0.4 - - [01/Dec/2024:13:41:37 +0800] \"GET / HTTP/1.1\" 200 612 \"-\" \"curl/8.11.0\" \"-\"\n","stream":"stdout","time":"2024-12-01T05:41:37.068888825Z"}
+{"log":"10.244.0.4 - - [01/Dec/2024:13:41:40 +0800] \"GET / HTTP/1.1\" 200 612 \"-\" \"curl/8.11.0\" \"-\"\n","stream":"stdout","time":"2024-12-01T05:41:40.151378876Z"}
+{"log":"10.244.0.4 - - [01/Dec/2024:13:41:43 +0800] \"GET / HTTP/1.1\" 200 612 \"-\" \"curl/8.11.0\" \"-\"\n","stream":"stdout","time":"2024-12-01T05:41:43.253009408Z"}
+{"log":"10.244.0.4 - - [01/Dec/2024:13:41:46 +0800] \"GET / HTTP/1.1\" 200 612 \"-\" \"curl/8.11.0\" \"-\"\n","stream":"stdout","time":"2024-12-01T05:41:46.4554229Z"}
+
+...
+
+{"log":"10.244.0.4 - - [01/Dec/2024:13:59:00 +0800] \"GET / HTTP/1.1\" 200 612 \"-\" \"curl/8.11.0\" \"-\"\n","stream":"stdout","time":"2024-12-01T05:59:00.158234165Z"}
+{"log":"10.244.0.4 - - [01/Dec/2024:13:59:03 +0800] \"GET / HTTP/1.1\" 200 612 \"-\" \"curl/8.11.0\" \"-\"\n","stream":"stdout","time":"2024-12-01T05:59:03.352100076Z"}
+{"log":"10.244.0.4 - - [01/Dec/2024:13:59:06 +0800] \"GET / HTTP/1.1\" 200 612 \"-\" \"curl/8.11.0\" \"-\"\n","stream":"stdout","time":"2024-12-01T05:59:06.454069263Z"}
+{"log":"10.244.0.4 - - [01/Dec/2024:13:59:09 +0800] \"GET / HTTP/1.1\" 200 612 \"-\" \"curl/8.11.0\" \"-\"\n","stream":"stdout","time":"2024-12-01T05:59:09.553745235Z"}
+{"log":"10.244.0.4 - - [01/Dec/2024:13:59:12 +0800] \"GET / HTTP/1.1\" 200 612 \"-\" \"curl/8.11.0\" \"-\"\n","stream":"stdout","time":"2024-12-01T05:59:12.661940572Z"}
+```
+---
+### P.S. В файловой системе отлаживаемого контейнера (kyos0109/nginx-distroless) из эфемерного директории `/etc/nginx` нет.
+
+```bash
+root@nginx-distroless:~#  ls -la /etc   
+total 296
+drwxr-xr-x 1 root root    4096 Dec  1 07:48 .
+drwxr-xr-x 1 root root    4096 Dec  1 07:48 ..
+-rw------- 1 root root       0 Oct 16 06:54 .pwd.lock
+drwxr-xr-x 2 root root    4096 Oct 16 07:00 alternatives
+drwxr-xr-x 8 root root    4096 Oct 16 06:54 apt
+-rw-r--r-- 1 root root    2319 Mar 31  2024 bash.bashrc
+-rw-r--r-- 1 root root     367 Aug  2  2022 bindresvport.blacklist
+drwxr-xr-x 2 root root    4096 Oct 16 07:00 cloud
+drwxr-xr-x 2 root root    4096 Oct 16 07:00 cron.d
+drwxr-xr-x 2 root root    4096 Oct 16 07:00 cron.daily
+-rw-r--r-- 1 root root    2967 Apr 12  2024 debconf.conf
+-rw-r--r-- 1 root root      11 Apr 22  2024 debian_version
+drwxr-xr-x 2 root root    4096 Oct 16 07:00 default
+drwxr-xr-x 4 root root    4096 Oct 16 07:00 dpkg
+-rw-r--r-- 1 root root     685 Apr  8  2024 e2scrub.conf
+-rw-r--r-- 1 root root     106 Oct 16 06:54 environment
+-rw-r--r-- 1 root root      37 Oct 16 06:53 fstab
+-rw-r--r-- 1 root root    2584 Jan 31  2024 gai.conf
+drwxr-xr-x 2 root root    4096 Oct 16 07:00 gnutls
+-rw-r--r-- 1 root root     503 Oct 16 07:00 group
+-rw-r--r-- 1 root root     434 Oct 16 06:54 group-
+-rw-r----- 1 root shadow   429 Oct 16 07:00 gshadow
+-rw-r----- 1 root shadow   364 Oct 16 06:54 gshadow-
+-rw-r--r-- 1 root root      92 Apr 22  2024 host.conf
+-rw-r--r-- 1 root root      17 Dec  1 07:43 hostname
+-rw-r--r-- 1 root root     211 Dec  1 07:48 hosts
+drwxr-xr-x 2 root root    4096 Oct 16 07:00 init.d
+-rw-r--r-- 1 root root      26 Aug 23 14:20 issue
+-rw-r--r-- 1 root root      19 Aug 23 14:20 issue.net
+drwxr-xr-x 3 root root    4096 Oct 16 06:54 kernel
+-rw-r--r-- 1 root root    5067 Oct 16 07:00 ld.so.cache
+-rw-r--r-- 1 root root      34 Aug  2  2022 ld.so.conf
+drwxr-xr-x 2 root root    4096 Oct 16 07:00 ld.so.conf.d
+-rw-r--r-- 1 root root     267 Apr 22  2024 legal
+-rw-r--r-- 1 root root     191 Mar 31  2024 libaudit.conf
+-rw-r--r-- 1 root root   12345 Feb 22  2024 login.defs
+drwxr-xr-x 2 root root    4096 Oct 16 07:00 logrotate.d
+-rw-r--r-- 1 root root     104 Aug 23 14:20 lsb-release
+-rw-r--r-- 1 root root       0 Oct 16 07:00 machine-id
+-rw-r--r-- 1 root root     744 Apr  8  2024 mke2fs.conf
+lrwxrwxrwx 1 root root      12 Dec  1 07:48 mtab -> /proc/mounts
+-rw-r--r-- 1 root root      91 Apr 22  2024 networks
+-rw-r--r-- 1 root root     494 Aug  2  2022 nsswitch.conf
+drwxr-xr-x 2 root root    4096 Oct 16 06:53 opt
+lrwxrwxrwx 1 root root      21 Aug 23 14:20 os-release -> ../usr/lib/os-release
+-rw-r--r-- 1 root root     552 Oct 13  2022 pam.conf
+drwxr-xr-x 2 root root    4096 Oct 16 07:00 pam.d
+-rw-r--r-- 1 root root     888 Oct 16 07:00 passwd
+-rw-r--r-- 1 root root     839 Oct 16 06:54 passwd-
+-rw-r--r-- 1 root root     582 Apr 22  2024 profile
+drwxr-xr-x 2 root root    4096 Oct 16 07:00 profile.d
+drwxr-xr-x 2 root root    4096 Dec  6  2023 rc0.d
+drwxr-xr-x 2 root root    4096 Dec  6  2023 rc1.d
+drwxr-xr-x 2 root root    4096 Dec  6  2023 rc2.d
+drwxr-xr-x 2 root root    4096 Dec  6  2023 rc3.d
+drwxr-xr-x 2 root root    4096 Dec  6  2023 rc4.d
+drwxr-xr-x 2 root root    4096 Dec  6  2023 rc5.d
+drwxr-xr-x 2 root root    4096 Dec  6  2023 rc6.d
+drwxr-xr-x 2 root root    4096 Oct 16 06:54 rcS.d
+-rw-r--r-- 1 root root     103 Dec  1 07:43 resolv.conf
+lrwxrwxrwx 1 root root      13 Apr  8  2024 rmt -> /usr/sbin/rmt
+drwxr-xr-x 4 root root    4096 Oct 16 07:00 security
+drwxr-xr-x 2 root root    4096 Oct 16 06:58 selinux
+-rw-r----- 1 root shadow   502 Oct 16 07:00 shadow
+-rw-r----- 1 root shadow   474 Oct 16 06:54 shadow-
+-rw-r--r-- 1 root root     118 Oct 16 06:54 shells
+drwxr-xr-x 2 root root    4096 Oct 16 06:54 skel
+-rw-r--r-- 1 root root      20 Oct 16 07:00 subgid
+-rw-r--r-- 1 root root       0 Oct 16 06:54 subgid-
+-rw-r--r-- 1 root root      20 Oct 16 07:00 subuid
+-rw-r--r-- 1 root root       0 Oct 16 06:54 subuid-
+-rw-r--r-- 1 root root    2209 Mar 24  2024 sysctl.conf
+drwxr-xr-x 2 root root    4096 Oct 16 07:00 sysctl.d
+drwxr-xr-x 4 root root    4096 Dec  6  2023 systemd
+drwxr-xr-x 2 root root    4096 Oct 16 06:59 terminfo
+drwxr-xr-x 2 root root    4096 Oct 16 07:00 update-motd.d
+-rw-r--r-- 1 root root     681 Apr  8  2024 xattr.conf
+```
+---
+
 # HW12 Установка и использование CSI драйвера.
 
 ## В процессе выполнения ДЗ выполнены следующие мероприятия:
