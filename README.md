@@ -358,6 +358,38 @@ worker2    Ready    <none>          23m   v1.31.3   10.115.0.30   <none>        
 ```
 ---
 
+### **6. Развертывание отказоустойчивого кластера K8s с помощью `kubespray`.**
+Был опыт развертывания кластера в Yandex Cloud согласно [этого мануала](https://habr.com/ru/articles/344704/).
+
+**inventory.example**
+
+```inventory
+k8s-m1.me ip=192.168.20.10
+k8s-m2.me ip=192.168.20.11
+k8s-m3.me ip=192.168.20.12
+k8s-s1.me ip=192.168.20.13
+k8s-s2.me ip=192.168.20.14
+
+[kube-master]
+k8s-m1.me
+k8s-m2.me
+k8s-m3.me
+
+[etcd]
+k8s-m1.me
+k8s-m2.me
+k8s-m3.me
+
+[kube-node]
+k8s-s1.me
+k8s-s2.me
+
+[k8s-cluster:children]
+kube-node
+kube-master
+```
+---
+
 # HW13 Диагностика и отладка в Kubernetes.
 
 ## В процессе выполнения ДЗ выполнены следующие мероприятия:
