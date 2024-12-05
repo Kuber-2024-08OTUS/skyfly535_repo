@@ -1,0 +1,55 @@
+#cloud-config
+users:
+ - default # Добавляется пользователь по умолчанию (default), который наследует настройки от стандартного пользователя операционной системы
+
+runcmd:
+- |
+  #!/bin/bash
+  # Отключение и остановка автоматического обновления APT
+  systemctl disable apt-daily.service && systemctl disable apt-daily.timer && systemctl disable apt-daily-upgrade.timer &&  systemctl disable apt-daily-upgrade.service
+  systemctl stop apt-daily.service && systemctl stop apt-daily.timer && systemctl stop apt-daily-upgrade.timer && systemctl stop apt-daily-upgrade.service
+  systemctl kill --kill-who=all apt-daily.service
+  while ! (systemctl list-units --all apt-daily.service | egrep -q '(dead|failed)')
+  do
+    sleep 1;
+  done
+  # Создается файл /etc/sysctl.d/k8s.conf с параметрами
+  cat <<EOF |  tee /etc/sysctl.d/k8s.conf
+  # Включение форвардинга
+  net.bridge.bridge-nf-call-iptables  = 1
+  net.ipv4.ip_forward                 = 1
+  # Включение маршрутизации для iptables
+  net.bridge.bridge-nf-call-ip6tables = 1
+  EOF
+  # Применяются изменения с помощью sysctl --system
+  sudo sysctl --system
+  # Загрузка необходимых модулей ядра
+  cat <<EOF | tee /etc/modules-load.d/k8s.conf
+  overlay
+  br_netfilter
+  EOF
+  modprobe overlay
+  modprobe br_netfilter
+  # Отключение и остановка брандмауэра UFW
+  systemctl stop ufw && systemctl disable ufw
+  # Импортируется ключ репозитория Kubernetes
+  curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.30/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+  apt-get update
+  apt-get install -y apt-transport-https ca-certificates curl gpg
+  # Добавляется репозиторий для Kubernetes версии 1.30
+  echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.30/deb/ /' | tee /etc/apt/sources.list.d/kubernetes.list
+  OS=xUbuntu_20.04
+  CRIO_VERSION=1.28
+  echo "deb https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable/$OS/ /"|sudo tee /etc/apt/sources.list.d/devel:kubic:libcontainers:stable.list
+  echo "deb http://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable:/cri-o:/$CRIO_VERSION/$OS/ /"| tee /etc/apt/sources.list.d/devel:kubic:libcontainers:stable:cri-o:$CRIO_VERSION.list
+  curl -L https://download.opensuse.org/repositories/devel:kubic:libcontainers:stable:cri-o:$CRIO_VERSION/$OS/Release.key |  apt-key add -
+  curl -L https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable/$OS/Release.key | apt-key add -
+  apt-get update
+  # Устанавливаются пакеты: kubelet, kubeadm, kubectl (основные инструменты Kubernetes), устанавливаются пакеты CRI-O: cri-o, cri-o-runc, cri-tools (контейнерный рантайм)
+  apt-get install -y kubelet kubeadm kubectl cri-o cri-o-runc cri-tools
+  # Включаются и запускаются службы CRI-O и Kubelet
+  systemctl enable crio.service
+  systemctl start crio.service
+  # Ставится "hold" на пакеты Kubernetes (kubelet, kubeadm, kubectl) для предотвращения их автоматического обновления
+  apt-mark hold kubelet kubeadm kubectl
+  systemctl enable --now kubelet
