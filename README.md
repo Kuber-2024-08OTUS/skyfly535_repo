@@ -31,7 +31,364 @@ skyfly535 kubernetes repository
 
 - [HW12 Установка и использование CSI драйвера.](#hw12-установка-и-использование-csi-драйвера)
 
-- [HW13 Диагностика и отладка в Kubernetes.](#hw13-диагностика-и-отладка-в-kubernetes)
+- [HW14 Подходы к развертыванию и обновлению production-grade кластера.](#hw14-подходы-к-развертыванию-и-обновлению-production-grade-кластера)
+
+
+# HW14 Подходы к развертыванию и обновлению production-grade кластера.
+
+## В процессе выполнения ДЗ выполнены следующие мероприятия:
+
+### **1. Написаны манифесты Terraform для развертывания виртуальных машин удовлетворяющего условиям ДЗ в Yandex Cloud.**
+
+Создан файл `./kubernetes-prod/terraform_YC_k8s/nods.tf` со следующим содержимым:
+
+```hcl
+# описание ноды с Сontrol plane (master)
+resource "yandex_compute_instance" "master" {
+  count = var.cp_nodes_count
+  name  = "k8s-master-${count.index}"
+  hostname = "master-${count.index}"
+  
+
+  resources {
+    cores  = var.node_cpu_count_master
+    memory = var.node_memory_size_master
+  }
+
+  boot_disk {
+    initialize_params {
+      type = "network-ssd"
+      image_id = var.image_id # ID образа Ubuntu 20.04 LTS
+      size = var.node_disk_size_master
+    }
+  }
+
+  network_interface {
+    subnet_id = var.subnet_id
+    nat       = true
+  }
+
+  metadata = {
+    ssh-keys = "ubuntu:${file(var.public_key_path)}"
+    user-data = file("${path.module}/userdata.yaml")
+  }
+}
+
+# описание worker нод
+resource "yandex_compute_instance" "worker" {
+  count = var.workload_nodes_count
+  name  = "k8s-worker-${count.index}"
+  hostname = "worker${count.index}"
+
+  resources {
+    cores  = var.node_cpu_count_worker
+    memory = var.node_memory_size_worker
+  }
+
+  boot_disk {
+    initialize_params {
+      type = "network-ssd"
+      image_id = var.image_id # ID образа Ubuntu 20.04 LTS
+      size = var.node_disk_size_worker
+    }
+  }
+
+  network_interface {
+    subnet_id = var.subnet_id
+    nat       = true
+  }
+
+  metadata = {
+    ssh-keys = "ubuntu:${file(var.public_key_path)}"
+    user-data = file("${path.module}/userdata.yaml")
+  }
+}
+```
+---
+
+### **2. Нагуглен и адаптирован файл `./kubernetes-prod/terraform_YC_k8s/userdata.yaml` для передачи в виртуальные машины скрипта для автоматической настройки окружения с помощью Cloud-Init при её запуске.**
+
+```yaml
+#cloud-config
+users:
+ - default # Добавляется пользователь по умолчанию (default), который наследует настройки от стандартного пользователя операционной системы
+
+runcmd:
+- |
+  #!/bin/bash
+  # Отключение и остановка автоматического обновления APT
+  systemctl disable apt-daily.service && systemctl disable apt-daily.timer && systemctl disable apt-daily-upgrade.timer &&  systemctl disable apt-daily-upgrade.service
+  systemctl stop apt-daily.service && systemctl stop apt-daily.timer && systemctl stop apt-daily-upgrade.timer && systemctl stop apt-daily-upgrade.service
+  systemctl kill --kill-who=all apt-daily.service
+  while ! (systemctl list-units --all apt-daily.service | egrep -q '(dead|failed)')
+  do
+    sleep 1;
+  done
+  # Создается файл /etc/sysctl.d/k8s.conf с параметрами
+  cat <<EOF |  tee /etc/sysctl.d/k8s.conf
+  # Включение форвардинга
+  net.bridge.bridge-nf-call-iptables  = 1
+  net.ipv4.ip_forward                 = 1
+  # Включение маршрутизации для iptables
+  net.bridge.bridge-nf-call-ip6tables = 1
+  EOF
+  # Применяются изменения с помощью sysctl --system
+  sudo sysctl --system
+  # Загрузка необходимых модулей ядра
+  cat <<EOF | tee /etc/modules-load.d/k8s.conf
+  overlay
+  br_netfilter
+  EOF
+  modprobe overlay
+  modprobe br_netfilter
+  # Отключение и остановка брандмауэра UFW
+  systemctl stop ufw && systemctl disable ufw
+  # Импортируется ключ репозитория Kubernetes
+  curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.30/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+  apt-get update
+  apt-get install -y apt-transport-https ca-certificates curl gpg
+  # Добавляется репозиторий для Kubernetes версии 1.30
+  echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.30/deb/ /' | tee /etc/apt/sources.list.d/kubernetes.list
+  OS=xUbuntu_20.04
+  CRIO_VERSION=1.28
+  echo "deb https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable/$OS/ /"|sudo tee /etc/apt/sources.list.d/devel:kubic:libcontainers:stable.list
+  echo "deb http://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable:/cri-o:/$CRIO_VERSION/$OS/ /"| tee /etc/apt/sources.list.d/devel:kubic:libcontainers:stable:cri-o:$CRIO_VERSION.list
+  curl -L https://download.opensuse.org/repositories/devel:kubic:libcontainers:stable:cri-o:$CRIO_VERSION/$OS/Release.key |  apt-key add -
+  curl -L https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable/$OS/Release.key | apt-key add -
+  apt-get update
+  # Устанавливаются пакеты: kubelet, kubeadm, kubectl (основные инструменты Kubernetes), устанавливаются пакеты CRI-O: cri-o, cri-o-runc, cri-tools (контейнерный рантайм)
+  apt-get install -y kubelet kubeadm kubectl cri-o cri-o-runc cri-tools
+  # Включаются и запускаются службы CRI-O и Kubelet
+  systemctl enable crio.service
+  systemctl start crio.service
+  # Ставится "hold" на пакеты Kubernetes (kubelet, kubeadm, kubectl) для предотвращения их автоматического обновления
+  apt-mark hold kubelet kubeadm kubectl
+  systemctl enable --now kubelet
+```
+
+#### Результат выполнения файла:
+После старта виртуальной машины:
+- Установлены и настроены Kubernetes и CRI-O.
+- Подготовлена система для запуска Kubernetes-кластера.
+- Отключены лишние службы для минимизации помех при настройке Kubernetes. 
+
+Этот подход автоматизирует первичную настройку виртуальной машины и снижает вероятность человеческой ошибки.
+
+---
+
+### **3. Нагуглен и адаптирован файл `./kubernetes-prod/terraform_YC_k8s/apply.sh` скрипта предназначенного для автоматизации развёртывания Kubernetes-кластера с помощью Terraform и kubeadm.**
+
+```bash
+# Развёртывание инфраструктуры с помощью Terraform
+terraform apply -auto-approve
+# Ожидание инициализации виртуальных машин
+sleep 60
+# Выполнение скрипта установки на мастер-ноде
+cat install_master.sh | ssh -o StrictHostKeyChecking=no ubuntu@$(terraform output -json | jq  '.master_ip_addr.value' | tr -d '"') 'sudo bash' | tee out/master.log
+# Приостанавливает выполнение скрипта на 5 секунд для завершения процессов инициализации на мастер-ноде
+sleep 5
+# Подготовка скрипта для воркер-нод
+echo 'cloud-init status --wait' > out/install_worker.sh 
+cat out/master.log  | grep -A 1 'kubeadm join' >> out/install_worker.sh  
+# Выполнение скрипта на воркер-нодах
+for i in $(terraform output -json | jq  '.worker_ip_addr.value[]' | tr -d '"') ;do cat out/install_worker.sh | ssh  -o StrictHostKeyChecking=no ubuntu@$i sudo bash ; done  
+```
+
+## **Общий рабочий процесс скрипта**
+
+1. **Развёртывание инфраструктуры:**
+   - Создаются виртуальные машины для мастер- и воркер-нод с помощью Terraform.
+
+2. **Настройка SSH-доступа:**
+   - Устанавливаются корректные права доступа к приватному SSH-ключу.
+
+3. **Инициализация мастер-ноды:**
+   - Выполняется скрипт `install_master.sh` на мастер-ноде, который инициализирует Kubernetes-кластер.
+   - Вывод сохраняется для последующего использования.
+
+4. **Подготовка скрипта для воркер-нод:**
+   - Создаётся скрипт `install_worker.sh`, содержащий команду ожидания завершения `cloud-init` и команду `kubeadm join`.
+
+5. **Присоединение воркер-нод:**
+   - Скрипт `install_worker.sh` выполняется на каждой воркер-ноде, присоединяя их к кластеру.
+
+файл `./kubernetes-prod/terraform_YC_k8s/install_master.sh`
+
+```bash
+# Ожидание завершения процессов Cloud-Init (аставляет скрипт ждать, пока все процессы cloud-init не завершатся)
+cloud-init status --wait
+# команда, используемая для инициализации мастер-ноды Kubernetes, то есть для установки компонентов управления (control plane)
+kubeadm init --upload-certs --pod-network-cidr=10.244.0.0/16
+# Настройка окружения для kubectl
+export KUBECONFIG=/etc/kubernetes/admin.conf
+# Установка сетевого плагина Flannel
+kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml
+```
+
+## **Общий рабочий процесс скрипта**
+
+1. **Ожидание завершения инициализации виртуальной машины:**
+
+   - Убеждается, что все процессы `cloud-init` завершены, и система готова к установке Kubernetes.
+
+2. **Инициализация мастер-ноды Kubernetes:**
+
+   - Устанавливает компоненты управления Kubernetes.
+   - Подготавливает кластер для присоединения воркер-нод и установки сетевого плагина.
+
+3. **Настройка доступа к кластеру:**
+
+   - Устанавливает переменную `KUBECONFIG`, чтобы команды `kubectl` могли взаимодействовать с кластером с правами администратора.
+
+4. **Установка сетевого плагина Flannel:**
+
+   - Обеспечивает сетевое взаимодействие между подами в кластере.
+   - Завершает базовую настройку кластера, делая его готовым к развертыванию приложений и присоединению дополнительных узлов.
+
+---
+
+### **4. Нагуглен и адаптирован файл `./kubernetes-prod/terraform_YC_k8s/upgrade.sh` скрипта предназначенного для автоматизации процесса обновления Kubernetes-кластера до версии v1.31.0, включая обновление мастер-нод и воркер-нод.**
+
+```bash
+echo "Start upgrade master"
+# Получение IP-адреса мастер-ноды
+MASTER_IP=$(terraform output -json | jq  '.master_ip_addr.value' | tr -d '"')
+# Установка SSH-подключения и выполнение команд на мастер-ноде
+cat <<  EOF  | ssh -o StrictHostKeyChecking=no ubuntu@$MASTER_IP  'sudo bash'
+        # Добавление репозитория Kubernetes версии v1.31
+        echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.31/deb/ /' | tee /etc/apt/sources.list.d/kubernetes.list
+        # Обновление списка пакетов
+        apt-get update
+        # Разблокировка пакетов kubeadm и kubectl
+        apt-mark unhold kubeadm kubectl
+        # Установка новых версий kubeadm и kubectl
+        apt-get install -y kubeadm kubectl
+        # Блокировка пакетов kubeadm и kubectl
+        apt-mark hold kubeadm kubectl
+        # Экспорт переменной KUBECONFIG
+        export KUBECONFIG=/etc/kubernetes/admin.conf
+        # Планирование обновления Kubernetes
+        kubeadm upgrade plan
+        # Применение обновления до версии v1.31.0
+        echo 'y' | kubeadm upgrade apply v1.31.0
+        # Разблокировка пакета kubelet
+        apt-mark unhold kubelet 
+        # Установка новой версии kubelet
+        apt-get install -y kubelet
+        # Блокировка пакета kubelet
+        apt-mark hold kubelet 
+        # Перезапуск kubelet
+        systemctl daemon-reload
+        systemctl restart kubelet
+        # Создание скрипта upgrade-worker.sh для воркер-нод
+        echo 'echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.31/deb/ /" | tee /etc/apt/sources.list.d/kubernetes.list
+        apt-get update
+        apt-mark unhold kubeadm kubectl kubelet
+        apt-get install -y kubeadm kubectl kubelet
+        apt-mark hold kubeadm kubectl kubelet
+        systemctl daemon-reload
+        systemctl restart kubelet' >  upgrade-worker.sh
+EOF
+# Ожидание завершения обновления мастер-ноды
+sleep 60
+# Получение списка воркер-нод и их IP-адресов
+ssh   -o StrictHostKeyChecking=no ubuntu@$MASTER_IP 'export KUBECONFIG=/etc/kubernetes/admin.conf ; sudo -E kubectl get nodes -o json' | python3 -c "
+import json
+import sys
+data = json.load(sys.stdin)
+for i in (data['items']):
+   print(i['status']['addresses'][1]['address']+' '+i['status']['addresses'][0]['address'])"  | grep 'worker' | while read a b
+ do
+    # Обновление воркер-нод в цикле
+    echo "Upgrading on $a"
+    # Выполнение команд на мастер-ноде для управления воркер-нодой
+    cat  << EOF | ssh -A -o StrictHostKeyChecking=no  ubuntu@$MASTER_IP  "bash" 
+    # Дрейн воркер-ноды
+    export KUBECONFIG=/etc/kubernetes/admin.conf ; sudo -E kubectl  drain $a --ignore-daemonsets &&
+    sleep 10 &&
+    # Обновление воркер-ноды
+    cat upgrade-worker.sh | ssh -o StrictHostKeyChecking=no  $b 'sudo bash' &&
+    sleep 10 &&
+    # Разблокировка воркер-ноды
+    sudo -E kubectl uncordon $a &&
+    sleep 10
+EOF 
+    echo "Upgrade on $a done"
+done
+```
+
+## **Итоговый рабочий процесс скрипта**
+
+1. **Обновление мастер-ноды**:
+   - Обновляются компоненты управления Kubernetes на мастер-ноде до версии `v1.31.0`.
+   - Создается скрипт `upgrade-worker.sh` для обновления воркер-нод.
+
+2. **Получение списка воркер-нод**:
+   - Извлекаются имена и IP-адреса воркер-нод из кластера.
+
+3. **Обновление воркер-нод в цикле**:
+   - Для каждой воркер-ноды выполняются команды:
+     - **Дрейн узла**: Перемещение подов с воркер-ноды.
+     - **Обновление пакетов Kubernetes**: Выполнение `upgrade-worker.sh` на воркер-ноде.
+     - **Uncordon узла**: Возвращение воркер-ноды в активное состояние.
+
+---
+
+### **5. Произведена проверка развернутой инфраструктуры.**
+
+**5.1** Cтатус и версия k8s всех нод кластера после развертывания:
+
+```bash
+ubuntu@master-0:~$ kubectl get nodes -o wide
+NAME       STATUS   ROLES           AGE     VERSION   INTERNAL-IP   EXTERNAL-IP   OS-IMAGE             KERNEL-VERSION      CONTAINER-RUNTIME
+master-0   Ready    control-plane   3m39s   v1.30.7   10.115.0.21   <none>        Ubuntu 22.04.3 LTS   5.15.0-91-generic   cri-o://1.28.4
+worker0    Ready    <none>          2m29s   v1.30.7   10.115.0.34   <none>        Ubuntu 22.04.3 LTS   5.15.0-91-generic   cri-o://1.28.4
+worker1    Ready    <none>          2m21s   v1.30.7   10.115.0.5    <none>        Ubuntu 22.04.3 LTS   5.15.0-91-generic   cri-o://1.28.4
+worker2    Ready    <none>          2m12s   v1.30.7   10.115.0.30   <none>        Ubuntu 22.04.3 LTS   5.15.0-91-generic   cri-o://1.28.4
+```
+**5.2** Cтатус и версия k8s всех нод кластера после обновления:
+
+```bash
+ubuntu@master-0:~$ kubectl get nodes -o wide
+NAME       STATUS   ROLES           AGE   VERSION   INTERNAL-IP   EXTERNAL-IP   OS-IMAGE             KERNEL-VERSION      CONTAINER-RUNTIME
+master-0   Ready    control-plane   24m   v1.31.3   10.115.0.21   <none>        Ubuntu 22.04.3 LTS   5.15.0-91-generic   cri-o://1.28.4
+worker0    Ready    <none>          23m   v1.31.3   10.115.0.34   <none>        Ubuntu 22.04.3 LTS   5.15.0-91-generic   cri-o://1.28.4
+worker1    Ready    <none>          23m   v1.31.3   10.115.0.5    <none>        Ubuntu 22.04.3 LTS   5.15.0-91-generic   cri-o://1.28.4
+worker2    Ready    <none>          23m   v1.31.3   10.115.0.30   <none>        Ubuntu 22.04.3 LTS   5.15.0-91-generic   cri-o://1.28.4
+```
+---
+
+### **6. Развертывание отказоустойчивого кластера K8s с помощью `kubespray`.**
+Был опыт развертывания кластера в Yandex Cloud согласно [этого мануала](https://habr.com/ru/articles/344704/).
+
+**inventory.example**
+
+```inventory
+k8s-m1.me ip=192.168.20.10
+k8s-m2.me ip=192.168.20.11
+k8s-m3.me ip=192.168.20.12
+k8s-s1.me ip=192.168.20.13
+k8s-s2.me ip=192.168.20.14
+
+[kube-master]
+k8s-m1.me
+k8s-m2.me
+k8s-m3.me
+
+[etcd]
+k8s-m1.me
+k8s-m2.me
+k8s-m3.me
+
+[kube-node]
+k8s-s1.me
+k8s-s2.me
+
+[k8s-cluster:children]
+kube-node
+kube-master
+```
+---
 
 # HW13 Диагностика и отладка в Kubernetes.
 

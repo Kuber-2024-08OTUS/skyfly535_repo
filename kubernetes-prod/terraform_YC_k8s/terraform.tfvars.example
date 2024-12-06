@@ -1,0 +1,17 @@
+service_account_key_file    = "/path/to/key/json"
+cloud_id                    = "example cloud_id"
+folder_id                   = "example folder_id"
+public_key_path             = "~/.ssh/appuser.pub"
+
+service_account_id          = "example service_account_id"
+network_id                  = "example network_id"
+subnet_id                   = "example subnet_id"
+image_id                    = "example image_id"
+node_cpu_count_master       = 4
+node_cpu_count_worker       = 4
+node_memory_size_master     = 8
+node_memory_size_worker     = 8
+node_disk_size_master       = 32
+node_disk_size_worker       = 32
+cp_nodes_count              = 1
+workload_nodes_count        = 3
